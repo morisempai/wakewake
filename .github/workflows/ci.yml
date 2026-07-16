@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: CI reads the repo and nothing else. It has no cloud credentials
+# and no write access — deployment happens in separate, environment-gated workflows
+# (cicd-conventions: "the pipeline is the only entity that touches the cloud").
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fires on any change to contracts/ — the contract-guardian check from cicd-conventions.
+  # Contracts are the source of truth for every service boundary, so an invalid spec must
+  # never reach main: services are generated and verified against these files.
+  lint-openapi:
+    name: Lint OpenAPI specs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      # Pinned to a major range and run via npx: the repo has no lockfile yet (no service
+      # packages exist until M2), so `pnpm install --frozen-lockfile` would fail. Revisit
+      # when M2 introduces real dependencies — see the lockfile note in the M1 PR.
+      - name: Spectral lint
+        run: |
+          npx --yes @stoplight/spectral-cli@6 lint \
+            "contracts/openapi/*.yaml" \
+            --ruleset .spectral.yaml \
+            --fail-severity=error \
+            --display-only-failures
+
+  lint-asyncapi:
+    name: Lint AsyncAPI spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: AsyncAPI validate
+        run: |
+          npx --yes @asyncapi/cli@2 validate contracts/asyncapi/booking-events.yaml
+
+  # Cheap structural checks that don't need a toolchain. These catch the class of mistake
+  # that is invisible in review but breaks a consumer at runtime.
+  contract-invariants:
+    name: Contract invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Event names are PascalCase facts, not dotted commands
+        run: |
+          # The api-contracts skill mandates <Entity><PastTenseVerb>. An earlier draft of this
+          # repo used dotted lowercase (booking.confirmed); this stops that regressing.
+          if grep -rnE '\b(booking|payment|availability|reservation)\.(held|confirmed|cancelled|succeeded|failed|reserved|released)\b' \
+              contracts/ services/*/CLAUDE.md; then
+            echo "::error::Dotted lowercase event name found. Events are PascalCase <Entity><PastTenseVerb> (api-contracts skill)."
+            exit 1
+          fi
+          echo "OK — no dotted event names."
+
+      - name: No secrets committed
+        run: |
+          # cicd-conventions: "A secret value appearing in a workflow file, log, or echo is
+          # an incident." This repo is public; a real token landing here is unrecoverable.
+          if grep -rnE 'github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{30,}|sk_live_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+              --exclude-dir=.git --exclude-dir=node_modules .; then
+            echo "::error::Possible real secret committed. Rotate it immediately — this repo is public."
+            exit 1
+          fi
+          echo "OK — no secret patterns found."
+
+      - name: Contracts live where the skill says they live
+        run: |
+          test -d contracts/openapi || { echo "::error::contracts/openapi/ missing"; exit 1; }
+          test -d contracts/asyncapi || { echo "::error::contracts/asyncapi/ missing"; exit 1; }
+          # Checked separately: a single `ls` over both paths exits non-zero when EITHER is
+          # missing, which would let one stale directory pass unnoticed.
+          for stale in contracts/http contracts/events; do
+            if [ -e "$stale" ]; then
+              echo "::error::Stale path $stale. Use contracts/openapi and contracts/asyncapi (api-contracts skill)."
+              exit 1
+            fi
+          done
+          echo "OK — contract layout matches the skill."
+
+  # Placeholder for the real pipeline. cicd-conventions defines the full shape:
+  #   lint → unit tests → contract tests → build image → integration tests
+  # Only the lint stage can exist today: M1 is contracts, and there is no service code to
+  # test or image to build. M2 adds unit/contract jobs per service with paths: filters.
+  # This job is deliberately NOT a silent no-op that reports green — it says what is missing.
+  pipeline-status:
+    name: Pipeline completeness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report which stages exist
+        run: |
+          echo "Implemented: lint (OpenAPI, AsyncAPI, invariants)"
+          echo "Not yet implemented — no service code exists (M2):"
+          echo "  - unit tests"
+          echo "  - contract tests (provider verification against contracts/openapi/)"
+          echo "  - image build"
+          echo "  - integration tests (Testcontainers: Postgres + RabbitMQ)"
+          echo ""
+          echo "The ADR-0003 concurrency proof — two simultaneous reserves of one slot, exactly"
+          echo "one wins — is the load-bearing test for this whole architecture and does not"
+          echo "exist yet. Do not read a green CI here as evidence the invariant holds."

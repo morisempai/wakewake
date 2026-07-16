@@ -1,0 +1,238 @@
+openapi: 3.1.0
+info:
+  title: Catalog Service
+  version: 1.0.0
+  description: |
+    Products the business rents: boats, yachts, and wakesurf sessions. Read-mostly.
+
+    Catalog owns product identity and display pricing. It does NOT own availability
+    (see availability.yaml) and its prices are indicative — the authoritative charge is
+    Payment's concern. A `resource_id` here is the handle Availability reserves against.
+servers:
+  - url: https://api.example.com
+    description: Via the API gateway — the sole external ingress (ADR-0006)
+
+tags:
+  - name: products
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe — checks database connectivity
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+        '503':
+          description: A dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: List products, newest first
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: type
+          in: query
+          description: Filter by product type
+          schema: { $ref: '#/components/schemas/ProductType' }
+        - name: min_capacity
+          in: query
+          description: Only products seating at least this many people
+          schema: { type: integer, minimum: 1 }
+        - name: location
+          in: query
+          description: Free-text location slug, e.g. "lake-geneva"
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: A page of products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Product' }
+                  next_cursor:
+                    type: [string, 'null']
+                    description: Opaque cursor for the next page; null on the last page
+                required: [data, next_cursor]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/products/{product_id}:
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Get a single product
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: product_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      responses:
+        '200':
+          description: The product
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak-issued OIDC token, validated at the gateway (ADR-0006)
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: |
+        Minted at the gateway if absent and propagated unchanged through every downstream
+        call, event, log line, and span. Echoed back on errors.
+      schema: { type: string, maxLength: 128 }
+    Limit:
+      name: limit
+      in: query
+      description: Page size
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from a previous response's next_cursor
+      schema: { type: string, maxLength: 512 }
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7, string-typed everywhere
+      examples: ['01912d5a-7f3e-7c1a-9b2e-3f4a5b6c7d8e']
+
+    ProductType:
+      type: string
+      enum: [boat, yacht, wakesurf_session]
+
+    Product:
+      type: object
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        resource_id:
+          allOf: [{ $ref: '#/components/schemas/Uuid' }]
+          description: |
+            The bookable resource this product maps to. Availability enforces the
+            no-overlap invariant against this id, never against product_id.
+        type: { $ref: '#/components/schemas/ProductType' }
+        name: { type: string, maxLength: 200 }
+        description: { type: [string, 'null'], maxLength: 5000 }
+        capacity:
+          type: integer
+          minimum: 1
+          description: Maximum number of people
+        location: { type: string, maxLength: 100 }
+        base_price_minor:
+          type: integer
+          minimum: 0
+          description: |
+            Indicative price in the currency's minor unit (e.g. cents). Integer to avoid
+            float rounding. Display only — Payment computes the authoritative amount.
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217
+        media_urls:
+          type: array
+          items: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required:
+        [id, resource_id, type, name, capacity, location, base_price_minor, currency, created_at, updated_at]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable snake_case. Clients switch on this, never on message.
+              enum:
+                - validation_failed
+                - unauthenticated
+                - unauthorized
+                - product_not_found
+                - internal_error
+            message:
+              type: string
+              description: Human-readable. Never leaks internals or stack traces.
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  issue: { type: string }
+                required: [field, issue]
+            correlation_id: { type: string }
+          required: [code, message, correlation_id]
+      required: [error]
+
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such product
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+security:
+  - bearerAuth: []

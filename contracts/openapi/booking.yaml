@@ -1,0 +1,364 @@
+openapi: 3.1.0
+info:
+  title: Booking Service
+  version: 1.0.0
+  description: |
+    The booking aggregate and its lifecycle: `held → confirmed` or `held → cancelled`.
+    Orchestrates the hold→pay→confirm saga with compensation (ADR-0003).
+
+    Booking is the only service that decides a booking's state. It reserves through
+    Availability and reacts to `PaymentSucceeded`/`PaymentFailed`; it never writes another
+    service's database (hard rule #6). Every state change is written in the same transaction
+    as its outbox row (ADR-0002), which is what makes RPO=0 achievable.
+
+    The customer id always comes from the JWT claims, never from a request field.
+servers:
+  - url: https://api.example.com
+    description: Via the API gateway — the sole external ingress (ADR-0006)
+
+tags:
+  - name: bookings
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe — checks database and broker connectivity
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+        '503':
+          description: A dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/bookings:
+    post:
+      tags: [bookings]
+      operationId: createBooking
+      summary: Hold a slot — the first step of the saga
+      description: |
+        Creates a booking in `held` state and reserves the window through Availability.
+        The hold expires at `hold_expires_at` (BOOKING_HOLD_TTL_SECONDS, default 900s) unless
+        payment confirms it first — this is what stops abandoned checkouts from locking
+        inventory forever.
+
+        If the window is already taken, Availability's exclusion constraint fires and this
+        returns `409 slot_unavailable`. A prior successful availability query is NOT a
+        guarantee; another customer can win the race in between.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product_id: { $ref: '#/components/schemas/Uuid' }
+                starts_at:
+                  type: string
+                  format: date-time
+                  description: Inclusive. UTC.
+                ends_at:
+                  type: string
+                  format: date-time
+                  description: Exclusive. UTC. Must be strictly after starts_at.
+                party_size:
+                  type: integer
+                  minimum: 1
+                  description: Must not exceed the product's capacity
+              required: [product_id, starts_at, ends_at, party_size]
+      responses:
+        '201':
+          description: Held — proceed to payment before hold_expires_at
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such product
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: |
+            The slot was taken (`slot_unavailable`), or this Idempotency-Key was reused with
+            a different body (`idempotency_key_reuse`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: |
+            Domain rule violated — party size exceeds capacity, window is in the past, or
+            ends_at is not after starts_at.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Availability is unavailable; no hold was created. Safe to retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    get:
+      tags: [bookings]
+      operationId: listBookings
+      summary: List the caller's own bookings, newest first
+      description: Scoped to the customer in the JWT claims. Never accepts a customer id parameter.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/BookingStatus' }
+      responses:
+        '200':
+          description: A page of bookings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Booking' }
+                  next_cursor:
+                    type: [string, 'null']
+                required: [data, next_cursor]
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/bookings/{booking_id}:
+    get:
+      tags: [bookings]
+      operationId: getBooking
+      summary: Get one booking
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: booking_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      responses:
+        '200':
+          description: The booking
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The booking belongs to another customer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/bookings/{booking_id}/actions/cancel:
+    post:
+      tags: [bookings]
+      operationId: cancelBooking
+      summary: Cancel a booking and release its slot
+      description: |
+        Moves the booking to `cancelled` and releases the reservation (compensation). Emits
+        `BookingCancelled`. Idempotent: cancelling an already-cancelled booking returns 200.
+
+        Refund policy for confirmed bookings is NOT modelled here — see the cancellation
+        stories in docs/stories/booking-domain-rules.md. Until that lands, cancelling a
+        confirmed booking frees the slot but triggers no refund.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: booking_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Cancelled (or already was)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The booking belongs to another customer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak-issued OIDC token. `sub` is the customer id.
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Propagated unchanged through every downstream call, event, log line, and span.
+      schema: { type: string, maxLength: 128 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated unique key. A retried request with the same key and body returns the
+        original booking instead of creating a second hold on the same slot.
+      schema: { type: string, minLength: 8, maxLength: 255 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string, maxLength: 512 }
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7, string-typed everywhere
+      examples: ['01912d5a-7f3e-7c1a-9b2e-3f4a5b6c7d8e']
+
+    BookingStatus:
+      type: string
+      enum: [held, confirmed, cancelled]
+      description: |
+        held      — slot reserved, TTL running, awaiting payment
+        confirmed — payment succeeded; the booking is real
+        cancelled — terminal; slot released. Reached from held (payment failed, TTL expired,
+                    or customer cancelled) or from confirmed (customer cancelled).
+
+    Booking:
+      type: object
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        customer_id:
+          allOf: [{ $ref: '#/components/schemas/Uuid' }]
+          description: From the JWT `sub` claim — never client-supplied
+        product_id: { $ref: '#/components/schemas/Uuid' }
+        resource_id:
+          allOf: [{ $ref: '#/components/schemas/Uuid' }]
+          description: The resource Availability holds on this booking's behalf
+        reservation_id:
+          oneOf:
+            - { $ref: '#/components/schemas/Uuid' }
+            - { type: 'null' }
+          description: Null once released
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        party_size: { type: integer, minimum: 1 }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        hold_expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            When an unpaid `held` booking is auto-cancelled and its slot freed. Null once
+            confirmed or cancelled.
+        total_minor:
+          type: integer
+          minimum: 0
+          description: Authoritative amount to charge, in the currency's minor unit
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        cancellation_reason: { type: [string, 'null'], maxLength: 500 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required:
+        [id, customer_id, product_id, resource_id, starts_at, ends_at, party_size, status,
+         total_minor, currency, created_at, updated_at]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_failed
+                - unauthenticated
+                - unauthorized
+                - booking_not_found
+                - product_not_found
+                - slot_unavailable
+                - idempotency_key_reuse
+                - party_exceeds_capacity
+                - invalid_time_window
+                - availability_unavailable
+                - internal_error
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  issue: { type: string }
+                required: [field, issue]
+            correlation_id: { type: string }
+          required: [code, message, correlation_id]
+      required: [error]
+
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such booking
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+security:
+  - bearerAuth: []

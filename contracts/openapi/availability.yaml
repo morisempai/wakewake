@@ -1,0 +1,371 @@
+openapi: 3.1.0
+info:
+  title: Availability Service
+  version: 1.0.0
+  description: |
+    The anti-double-booking engine. Owns the resource calendar and reservations.
+
+    The core invariant — no two reservations may hold the same resource over overlapping
+    time — is enforced BY THE DATABASE via a Postgres exclusion constraint (ADR-0003):
+
+        EXCLUDE USING gist (resource_id WITH =, during WITH &&)
+
+    This is a contract-level fact, not an implementation detail: callers MUST expect a
+    `409 reservation_overlap` on any overlapping request and MUST NOT assume that a prior
+    successful slot query guarantees a later reserve will succeed. Between the two, another
+    caller may have taken the slot. Query results are advisory; only the reserve is authoritative.
+servers:
+  - url: http://availability:3000
+    description: Internal only — not publicly routable (ADR-0006)
+
+tags:
+  - name: slots
+  - name: reservations
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe — checks database and broker connectivity
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+        '503':
+          description: A dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/resources/{resource_id}/slots:
+    get:
+      tags: [slots]
+      operationId: listSlots
+      summary: Query free/busy windows for a resource
+      description: |
+        Advisory only. A free window here can be taken before you reserve it — the reserve
+        call is the only authority. Treat this as "what to show the customer", never as a
+        guarantee.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: resource_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+        - name: from
+          in: query
+          required: true
+          description: Window start, inclusive (RFC 3339, UTC)
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          description: Window end, exclusive (RFC 3339, UTC). Must be after `from`.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Busy windows within the requested range
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resource_id: { $ref: '#/components/schemas/Uuid' }
+                  busy:
+                    type: array
+                    description: |
+                      Occupied windows (held or confirmed). Anything not listed is free
+                      as of this instant. Half-open intervals: [starts_at, ends_at).
+                    items:
+                      type: object
+                      properties:
+                        starts_at: { type: string, format: date-time }
+                        ends_at: { type: string, format: date-time }
+                      required: [starts_at, ends_at]
+                required: [resource_id, busy]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/reservations:
+    post:
+      tags: [reservations]
+      operationId: createReservation
+      summary: Reserve a time window for a resource
+      description: |
+        Atomically inserts a reservation guarded by the exclusion constraint. Overlapping
+        requests for the same resource are rejected by the database, so exactly one of N
+        concurrent callers wins and the rest receive `409 reservation_overlap`.
+
+        Created in `held` state with `expires_at` set from BOOKING_HOLD_TTL_SECONDS. An
+        unconfirmed hold is swept at expiry, emitting `ReservationReleased`.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resource_id: { $ref: '#/components/schemas/Uuid' }
+                booking_id:
+                  allOf: [{ $ref: '#/components/schemas/Uuid' }]
+                  description: The booking this reservation backs (Booking owns the saga)
+                starts_at:
+                  type: string
+                  format: date-time
+                  description: Inclusive. UTC.
+                ends_at:
+                  type: string
+                  format: date-time
+                  description: Exclusive. UTC. Must be strictly after starts_at.
+              required: [resource_id, booking_id, starts_at, ends_at]
+      responses:
+        '201':
+          description: Reserved — this caller won the slot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: |
+            Either the window overlaps an existing reservation (`reservation_overlap` — the
+            exclusion constraint fired), or this Idempotency-Key was already used with a
+            different request body (`idempotency_key_reuse`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                overlap:
+                  summary: Another caller holds an overlapping window
+                  value:
+                    error:
+                      code: reservation_overlap
+                      message: The requested window is no longer available for this resource.
+                      correlation_id: 01912d5a-7f3e-7c1a-9b2e-3f4a5b6c7d8e
+        '422':
+          description: Domain rule violated, e.g. ends_at is not after starts_at
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/reservations/{reservation_id}:
+    get:
+      tags: [reservations]
+      operationId: getReservation
+      summary: Get a reservation
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: reservation_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      responses:
+        '200':
+          description: The reservation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/reservations/{reservation_id}/actions/confirm:
+    post:
+      tags: [reservations]
+      operationId: confirmReservation
+      summary: Promote a held reservation to confirmed
+      description: |
+        Called on the payment-success path. Clears `expires_at` so the sweeper leaves it
+        alone. Idempotent: confirming an already-confirmed reservation returns 200.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: reservation_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      responses:
+        '200':
+          description: Confirmed (or already was)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Cannot confirm — the reservation was already released
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/reservations/{reservation_id}/actions/release:
+    post:
+      tags: [reservations]
+      operationId: releaseReservation
+      summary: Release a reservation, freeing the window
+      description: |
+        The compensation path. Called when payment fails or a booking is cancelled, and by
+        the TTL sweeper. Emits `ReservationReleased`. Idempotent: releasing an
+        already-released reservation returns 200.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: reservation_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { $ref: '#/components/schemas/ReleaseReason' }
+              required: [reason]
+      responses:
+        '200':
+          description: Released (or already was)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reservation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Propagated unchanged through every downstream call, event, log line, and span.
+      schema: { type: string, maxLength: 128 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated unique key. Replaying the same key with the same body returns the
+        original result rather than reserving twice; replaying with a different body is a
+        `409 idempotency_key_reuse`. Retries are at-least-once, so this is mandatory.
+      schema: { type: string, minLength: 8, maxLength: 255 }
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7, string-typed everywhere
+      examples: ['01912d5a-7f3e-7c1a-9b2e-3f4a5b6c7d8e']
+
+    ReservationStatus:
+      type: string
+      enum: [held, confirmed, released]
+      description: |
+        held      — window is locked, TTL running, awaiting payment
+        confirmed — payment succeeded; permanent
+        released  — freed by compensation or TTL expiry; terminal
+
+    ReleaseReason:
+      type: string
+      enum: [payment_failed, booking_cancelled, hold_expired]
+
+    Reservation:
+      type: object
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        resource_id: { $ref: '#/components/schemas/Uuid' }
+        booking_id: { $ref: '#/components/schemas/Uuid' }
+        starts_at:
+          type: string
+          format: date-time
+          description: Inclusive bound of the reserved window
+        ends_at:
+          type: string
+          format: date-time
+          description: Exclusive bound of the reserved window
+        status: { $ref: '#/components/schemas/ReservationStatus' }
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            When a `held` reservation is auto-released. Null once confirmed or released.
+        released_reason:
+          oneOf:
+            - { $ref: '#/components/schemas/ReleaseReason' }
+            - { type: 'null' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, resource_id, booking_id, starts_at, ends_at, status, created_at, updated_at]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_failed
+                - unauthenticated
+                - unauthorized
+                - reservation_not_found
+                - resource_not_found
+                - reservation_overlap
+                - idempotency_key_reuse
+                - invalid_time_window
+                - reservation_already_released
+                - internal_error
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  issue: { type: string }
+                required: [field, issue]
+            correlation_id: { type: string }
+          required: [code, message, correlation_id]
+      required: [error]
+
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such resource or reservation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+security:
+  - bearerAuth: []

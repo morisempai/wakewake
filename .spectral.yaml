@@ -1,0 +1,80 @@
+# Spectral ruleset — encodes the api-contracts skill as machine-checked rules.
+# The skill is the source of truth; this file is its enforcement. If they disagree,
+# the skill wins and this file is the bug.
+extends: ['spectral:oas']
+
+rules:
+  # --- Base rules we hold to error, not warning ---
+  operation-operationId: error
+  operation-tags: error
+  operation-description: warn
+  info-contact: off # single-operator project; no contact block needed yet
+  oas3-unused-component: warn
+
+  # --- Project conventions (api-contracts skill) ---
+
+  booking-paths-are-versioned:
+    description: Every path must sit under /v1/, except the health probes.
+    message: '"{{property}}" must start with /v1/ — major version goes in the path (api-contracts skill).'
+    severity: error
+    given: $.paths
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        match: '^(/v1/|/healthz$|/readyz$)'
+
+  booking-no-verbs-in-paths:
+    description: >
+      No verbs in paths. Non-CRUD operations use the /actions/<verb> sub-resource form,
+      e.g. POST /v1/bookings/{id}/actions/cancel.
+    message: '"{{property}}" looks like a verb path. Use /actions/<verb> instead (api-contracts skill).'
+    severity: error
+    given: $.paths
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        notMatch: '/(get|create|update|delete|list|make|do)[A-Za-z]*(/|$)'
+
+  booking-snake-case-properties:
+    description: JSON payload fields are snake_case.
+    message: '"{{property}}" must be snake_case (api-contracts skill).'
+    severity: error
+    given: $.components.schemas..properties[*]~
+    then:
+      function: pattern
+      functionOptions:
+        match: '^[a-z][a-z0-9_]*$'
+
+  booking-timestamps-end-in-at:
+    description: >
+      date-time fields are named <something>_at. Catches created/createdAt/timestamp drift
+      before it reaches a consumer.
+    message: '"{{property}}" is a date-time and must end in _at (api-contracts skill).'
+    severity: error
+    given: $.components.schemas..properties[?(@.format == 'date-time')]~
+    then:
+      function: pattern
+      functionOptions:
+        match: '_at$'
+
+  booking-error-envelope-required:
+    description: >
+      Every spec must define the shared Error envelope schema. Clients switch on error.code,
+      so a service inventing its own error shape breaks them.
+    message: 'Spec must define components.schemas.Error (api-contracts skill).'
+    severity: error
+    given: $.components.schemas
+    then:
+      field: Error
+      function: truthy
+
+  booking-security-defined:
+    description: 'Every spec declares bearerAuth; routes opt out explicitly with an empty security array.'
+    message: 'Spec must define a bearerAuth security scheme (api-contracts skill).'
+    severity: error
+    given: $.components.securitySchemes
+    then:
+      field: bearerAuth
+      function: truthy

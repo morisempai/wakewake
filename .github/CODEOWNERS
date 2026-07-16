@@ -1,18 +1,47 @@
-# Protected areas require review from the owning team.
-# Root rules: services may NOT edit contracts/, shared/, .github/, or other services
-# without a linked contract-change / shared-change issue.
+# Code owners.
+#
+# The first version of this file assigned org teams (@platform-team, @catalog-team,
+# @architecture, …). This is a personal repository, not an organization, so none of those
+# handles could ever resolve: the file read like an access control and functioned as a
+# comment. Fixed in #3.
+#
+# CODEOWNERS only *enforces* anything when a branch protection rule requires review from
+# code owners; otherwise it is a routing hint. The protection rule on main is the real gate.
+#
+# The area boundaries below were right — only the handles were wrong. When this project
+# gains an organization and teams, restore the per-team split rather than reinventing it.
 
-# Cross-cutting sources of truth
-/contracts/        @platform-team
-/shared/           @platform-team
-/.github/          @platform-team
-/infra/            @platform-team @sre-team
-/docs/adr/         @architecture
+# Default owner for anything not matched below.
+*                        @morisempai
 
-# Services — owned by their teams
-/services/gateway/       @platform-team
-/services/catalog/       @catalog-team
-/services/availability/  @availability-team
-/services/booking/       @booking-team
-/services/payment/       @payment-team
-/services/notification/  @notification-team
+# Cross-cutting sources of truth. Root rules: services may NOT edit contracts/, shared/,
+# .github/, or other services without a linked contract-change / shared-change issue.
+#
+# contracts/ is the source of truth for every service boundary (hard rule #2) — a change
+# here can break every consumer at once.
+/contracts/              @morisempai
+
+# shared/ ships to every service simultaneously.
+/shared/                 @morisempai
+
+# CI/CD and repo governance. Changes here alter the checks applied to every other change,
+# which makes this the most sensitive path in the repo.
+/.github/                @morisempai
+
+# Agent instructions and skills — these define how automated contributors behave.
+/.claude/                @morisempai
+/CLAUDE.md               @morisempai
+
+# Infrastructure — blast radius beyond any single service.
+/infra/                  @morisempai
+
+# Architecture decisions.
+/docs/adr/               @morisempai
+
+# Services — each owned by its team when teams exist.
+/services/gateway/       @morisempai
+/services/catalog/       @morisempai
+/services/availability/  @morisempai
+/services/booking/       @morisempai
+/services/payment/       @morisempai
+/services/notification/  @morisempai

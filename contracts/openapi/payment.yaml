@@ -1,0 +1,338 @@
+openapi: 3.1.0
+info:
+  title: Payment Service
+  version: 1.0.0
+  description: |
+    Takes payment for a booking via Stripe (test mode in dev) and emits the outcome as an event.
+
+    **PCI:** raw card data never reaches this service and is never stored or logged. The
+    customer's browser sends card details straight to Stripe and returns a token; we persist
+    only Stripe ids, status, and amount. Any change that would route card data through here
+    requires an ADR and a security review.
+
+    The authoritative payment outcome arrives via Stripe's webhook, not the create response —
+    a `pending` payment says nothing about whether the charge will succeed.
+servers:
+  - url: https://api.example.com
+    description: Via the API gateway — the sole external ingress (ADR-0006)
+
+tags:
+  - name: payments
+  - name: webhooks
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe — checks database and broker connectivity
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                required: [status]
+        '503':
+          description: A dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/payments:
+    post:
+      tags: [payments]
+      operationId: createPayment
+      summary: Start a payment for a held booking
+      description: |
+        Creates a Stripe PaymentIntent for the booking's authoritative amount and returns its
+        client secret so the browser can complete the charge directly with Stripe.
+
+        Returns `pending`. The real outcome arrives asynchronously via the Stripe webhook,
+        which is what emits `PaymentSucceeded`/`PaymentFailed`. Do NOT treat a 201 here as a
+        successful payment.
+
+        The amount is read from the booking — never from the request. A client-supplied
+        amount would let a customer set their own price.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                booking_id: { $ref: '#/components/schemas/Uuid' }
+              required: [booking_id]
+      responses:
+        '201':
+          description: PaymentIntent created; complete it client-side with Stripe
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/Payment' }
+                  - type: object
+                    properties:
+                      client_secret:
+                        type: string
+                        description: |
+                          Stripe PaymentIntent client secret. Returned once, on creation only;
+                          never persisted by us and never present on GET responses.
+                    required: [client_secret]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such booking
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: |
+            The Idempotency-Key was reused with a different body (`idempotency_key_reuse`),
+            or this booking already has a payment in flight (`payment_already_exists`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: |
+            The booking is not payable — it is already confirmed, cancelled, or its hold
+            expired (`booking_not_payable`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: Stripe rejected the request or was unreachable. No charge was made.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/payments/{payment_id}:
+    get:
+      tags: [payments]
+      operationId: getPayment
+      summary: Get a payment's status
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: payment_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      responses:
+        '200':
+          description: The payment. Never includes client_secret or any card data.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The payment belongs to another customer's booking
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/webhooks/stripe:
+    post:
+      tags: [webhooks]
+      operationId: handleStripeWebhook
+      summary: Stripe payment outcome callback
+      description: |
+        Called by Stripe, not by our clients. This is the authoritative source of payment
+        outcomes and the only path that emits `PaymentSucceeded`/`PaymentFailed`.
+
+        **Authentication is by Stripe signature, not by our JWT** — hence `security: []`.
+        The `Stripe-Signature` header MUST be verified against STRIPE_WEBHOOK_SECRET before
+        the body is parsed or trusted. An unverified body is attacker-controlled input: it
+        would let anyone mark any booking paid.
+
+        Stripe retries on non-2xx and may deliver duplicates, so handling is idempotent on
+        the Stripe event id. Unknown event types are acknowledged with 200 and ignored.
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          description: HMAC signature. Verified before the body is trusted.
+          schema: { type: string }
+      requestBody:
+        required: true
+        description: |
+          Raw Stripe Event object. The raw bytes are required for signature verification —
+          the body must not be re-serialized before the check.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Stripe event id — the idempotency key for this handler
+                type:
+                  type: string
+                  description: e.g. payment_intent.succeeded, payment_intent.payment_failed
+                data: { type: object }
+              required: [id, type, data]
+      responses:
+        '200':
+          description: |
+            Acknowledged. Returned for handled events, duplicates, and ignored event types
+            alike — anything else makes Stripe retry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received: { type: boolean, const: true }
+                required: [received]
+        '400':
+          description: |
+            Signature verification failed or the body is malformed. Deliberately returns no
+            detail — a verbose error here is an oracle for forging signatures.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Propagated unchanged through every downstream call, event, log line, and span.
+      schema: { type: string, maxLength: 128 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated unique key, passed through to Stripe's own idempotency. Mandatory:
+        a retried charge without one is a double-charge.
+      schema: { type: string, minLength: 8, maxLength: 255 }
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7, string-typed everywhere
+      examples: ['01912d5a-7f3e-7c1a-9b2e-3f4a5b6c7d8e']
+
+    PaymentStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+      description: |
+        pending   — PaymentIntent created, outcome unknown
+        succeeded — Stripe confirmed the charge (via webhook); terminal
+        failed    — Stripe declined or the intent was cancelled; terminal
+
+    Payment:
+      type: object
+      description: |
+        Contains no card data by construction. `provider_payment_id` is a Stripe reference,
+        not an instrument.
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        booking_id: { $ref: '#/components/schemas/Uuid' }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        amount_minor:
+          type: integer
+          minimum: 0
+          description: Read from the booking, in the currency's minor unit. Never client-supplied.
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        provider:
+          type: string
+          const: stripe
+        provider_payment_id:
+          type: string
+          description: Stripe PaymentIntent id, e.g. pi_3Abc...
+        failure_code:
+          type: [string, 'null']
+          description: Stripe's decline code when status is failed, e.g. card_declined
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required:
+        [id, booking_id, status, amount_minor, currency, provider, provider_payment_id,
+         created_at, updated_at]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_failed
+                - unauthenticated
+                - unauthorized
+                - payment_not_found
+                - booking_not_found
+                - booking_not_payable
+                - payment_already_exists
+                - idempotency_key_reuse
+                - signature_verification_failed
+                - provider_error
+                - internal_error
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  issue: { type: string }
+                required: [field, issue]
+            correlation_id: { type: string }
+          required: [code, message, correlation_id]
+      required: [error]
+
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such payment
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+security:
+  - bearerAuth: []
