@@ -36,13 +36,14 @@ Identity is **Keycloak** (self-hosted); CMS will be **Strapi/Directus** (ADR-000
 
 ## Local dev
 
-Prereqs: **Node 22** (`.nvmrc`), **pnpm 9**, **Docker**.
+Prereqs: **Go 1.23** (`go.work`), **Docker**, and **Node 22** (`.nvmrc`) — Node only to run the
+contract linters over `contracts/`, never as a service runtime (ADR-0008).
 
 ```bash
 cp .env.example .env
-pnpm install
-pnpm infra:up        # Postgres, RabbitMQ, Keycloak, Vault, Mailhog, OTel, Grafana/Prometheus/Tempo/Loki
-pnpm build && pnpm test
+make infra-up        # Postgres, RabbitMQ, Keycloak, Vault, Mailhog, OTel, Grafana/Prometheus/Tempo/Loki
+make check           # vet + build + test + contract lint
+make help            # every target
 ```
 
 Dev URLs: RabbitMQ UI `:15672`, Keycloak `:8080`, Mailhog `:8025`, Grafana `:3000`, Vault `:8200`.

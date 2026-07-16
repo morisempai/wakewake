@@ -1,6 +1,10 @@
 # ADR-0001: Microservices in a monorepo, contract-first
 
-- **Status:** Proposed  <!-- agents propose; a human sets Accepted (adr-writing skill) -->
+- **Status:** Proposed; stack choice superseded by ADR-0008  <!-- agents propose; a human sets Accepted (adr-writing skill) -->
+  <!-- ADR-0008 replaces "pnpm workspaces + Nx" with Go + go.work. Everything else below —
+       monorepo, contract-first, per-service data ownership — stands. The Decision text is left
+       as written (adr-writing: never edit past decisions); read it through this pointer. -->
+
 - **Date:** 2026-07-15
 - **Deciders:** Architecture (pending human sign-off)
 - **Related:** Reliability stories (async comms), Development (run locally), Security (gateway-only access); ADR-0006
