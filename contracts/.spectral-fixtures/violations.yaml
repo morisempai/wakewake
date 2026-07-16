@@ -1,0 +1,61 @@
+# DELIBERATELY INVALID — this file is a test fixture, not a contract.
+#
+# Every custom rule in /.spectral.yaml is violated exactly once below. CI lints this file and
+# asserts that each rule FIRES. If a rule stops matching — a typo in its JSONPath, an upstream
+# Spectral change, someone "tidying" the ruleset — this fixture goes quiet and CI fails.
+#
+# Why this exists: a lint rule that matches nothing reports success. A ruleset full of inert
+# rules is worse than no ruleset, because it manufactures confidence. On the first CI run of
+# this repo, Spectral reported only base-rule errors and none of the custom ones — which could
+# have meant "the specs are clean" or "the rules are dead". This fixture makes those two cases
+# distinguishable.
+#
+# NOT linted by the main job: that globs contracts/openapi/*.yaml, and this lives elsewhere.
+
+openapi: 3.1.0
+info:
+  title: Spectral ruleset self-test (intentionally invalid)
+  version: 0.0.0
+  description: Not a real service. See the header comment.
+
+paths:
+  # VIOLATES booking-paths-are-versioned — no /v1/ prefix, and not a health probe.
+  /products:
+    get:
+      operationId: fixtureUnversionedPath
+      tags: [fixture]
+      responses:
+        '200':
+          description: ok
+
+  # VIOLATES booking-no-verbs-in-paths — "getProducts" is a verb path; should be a noun
+  # plus an /actions/<verb> sub-resource.
+  /v1/getProducts:
+    get:
+      operationId: fixtureVerbInPath
+      tags: [fixture]
+      responses:
+        '200':
+          description: ok
+
+components:
+  # VIOLATES booking-error-envelope-required — schemas exist, but there is no Error schema,
+  # so clients would have nothing stable to switch on.
+  schemas:
+    FixtureThing:
+      type: object
+      properties:
+        # VIOLATES booking-snake-case-properties
+        camelCaseField:
+          type: string
+        # VIOLATES booking-timestamps-end-in-at — a date-time not named <something>_at
+        created:
+          type: string
+          format: date-time
+
+  # VIOLATES booking-security-defined — securitySchemes exists but defines no bearerAuth.
+  securitySchemes:
+    fixtureApiKey:
+      type: apiKey
+      in: header
+      name: X-Fixture-Key

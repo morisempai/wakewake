@@ -20,7 +20,9 @@
     "test": "nx run-many -t test",
     "test:contract": "nx run-many -t test:contract",
     "lint": "nx run-many -t lint",
-    "contracts:lint": "pnpm --filter @booking/contracts-tools lint",
+    "contracts:lint": "pnpm run contracts:lint:openapi && pnpm run contracts:lint:asyncapi",
+    "contracts:lint:openapi": "npx --yes @stoplight/spectral-cli@6 lint \"contracts/openapi/*.yaml\" --ruleset .spectral.yaml --fail-severity=error",
+    "contracts:lint:asyncapi": "npx --yes @asyncapi/cli@2 validate contracts/asyncapi/booking-events.yaml",
     "format": "prettier --write \"**/*.{ts,js,json,yaml,yml,md}\""
   },
   "devDependencies": {

@@ -1,0 +1,368 @@
+asyncapi: 3.0.0
+info:
+  title: Booking Domain Events
+  version: 1.0.0
+  description: |
+    Every event crossing a service boundary in the booking slice. Source of truth — services
+    implement these, they never define them (hard rule #2).
+
+    **Rules that hold for every event here:**
+
+    - Events are **facts that already happened**, named `<Entity><PastTenseVerb>`. They are
+      never commands. `BookingCancelled` states that a booking was cancelled; it does not ask
+      anyone to cancel anything. A consumer is free to ignore an event.
+    - Producers publish **after** the local transaction commits, via the transactional outbox
+      (ADR-0002). The state change and the outbox row are written atomically, so an event can
+      never describe a state that was rolled back.
+    - Delivery is **at-least-once**. Consumers MUST be idempotent keyed on the envelope `id`
+      and MUST tolerate duplicates.
+    - Consumers MUST **ignore unknown payload fields** — that is what lets a producer add an
+      optional field without a version bump.
+    - `correlation_id` is propagated unchanged from the originating request through every
+      event it causes, so one booking is a single trace end to end.
+
+    **Versioning:** additive optional fields do not bump `version`. Anything else — removing a
+    field, tightening a type, changing a meaning — is breaking and needs a new version plus a
+    deprecation window, coordinated through a `contract-change` issue.
+
+defaultContentType: application/json
+
+servers:
+  rabbitmq:
+    host: rabbitmq:5672
+    protocol: amqp
+    description: |
+      Dev broker from infra/docker-compose.yml. Topic exchange `booking.events`; the routing
+      key is the event name. Each consumer owns a durable queue with a dead-letter queue.
+
+channels:
+  BookingHeld:
+    address: booking.events.BookingHeld
+    messages:
+      BookingHeld:
+        $ref: '#/components/messages/BookingHeld'
+  BookingConfirmed:
+    address: booking.events.BookingConfirmed
+    messages:
+      BookingConfirmed:
+        $ref: '#/components/messages/BookingConfirmed'
+  BookingCancelled:
+    address: booking.events.BookingCancelled
+    messages:
+      BookingCancelled:
+        $ref: '#/components/messages/BookingCancelled'
+  PaymentSucceeded:
+    address: booking.events.PaymentSucceeded
+    messages:
+      PaymentSucceeded:
+        $ref: '#/components/messages/PaymentSucceeded'
+  PaymentFailed:
+    address: booking.events.PaymentFailed
+    messages:
+      PaymentFailed:
+        $ref: '#/components/messages/PaymentFailed'
+  ReservationCreated:
+    address: booking.events.ReservationCreated
+    messages:
+      ReservationCreated:
+        $ref: '#/components/messages/ReservationCreated'
+  ReservationReleased:
+    address: booking.events.ReservationReleased
+    messages:
+      ReservationReleased:
+        $ref: '#/components/messages/ReservationReleased'
+
+operations:
+  publishBookingHeld:
+    action: send
+    channel: { $ref: '#/channels/BookingHeld' }
+    summary: Booking publishes when a hold is created
+  publishBookingConfirmed:
+    action: send
+    channel: { $ref: '#/channels/BookingConfirmed' }
+    summary: Booking publishes when payment succeeded and the booking is real
+  publishBookingCancelled:
+    action: send
+    channel: { $ref: '#/channels/BookingCancelled' }
+    summary: Booking publishes when a booking reaches the cancelled terminal state
+  publishPaymentSucceeded:
+    action: send
+    channel: { $ref: '#/channels/PaymentSucceeded' }
+    summary: Payment publishes on verified Stripe webhook success
+  publishPaymentFailed:
+    action: send
+    channel: { $ref: '#/channels/PaymentFailed' }
+    summary: Payment publishes on verified Stripe webhook failure
+  publishReservationCreated:
+    action: send
+    channel: { $ref: '#/channels/ReservationCreated' }
+    summary: Availability publishes when a window is successfully held
+  publishReservationReleased:
+    action: send
+    channel: { $ref: '#/channels/ReservationReleased' }
+    summary: Availability publishes when a window is freed, including by TTL sweep
+
+  consumeBookingHeldInPayment:
+    action: receive
+    channel: { $ref: '#/channels/BookingHeld' }
+    summary: Payment prepares a payment context for the hold
+  consumeBookingCancelledInAvailability:
+    action: receive
+    channel: { $ref: '#/channels/BookingCancelled' }
+    summary: Availability releases the reservation (compensation)
+  consumeBookingConfirmedInNotification:
+    action: receive
+    channel: { $ref: '#/channels/BookingConfirmed' }
+    summary: Notification sends the confirmation email
+  consumePaymentSucceededInBooking:
+    action: receive
+    channel: { $ref: '#/channels/PaymentSucceeded' }
+    summary: Booking confirms the booking and emits BookingConfirmed
+  consumePaymentFailedInBooking:
+    action: receive
+    channel: { $ref: '#/channels/PaymentFailed' }
+    summary: Booking cancels the booking and emits BookingCancelled (compensation)
+  consumeReservationReleasedInBooking:
+    action: receive
+    channel: { $ref: '#/channels/ReservationReleased' }
+    summary: Booking cancels a hold whose TTL expired
+
+components:
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      description: UUIDv7
+      examples: ['01912d5a-7f3e-7c1a-9b2e-3f4a5b6c7d8e']
+
+    Envelope:
+      type: object
+      description: |
+        Every event on every channel carries exactly these five envelope fields plus a
+        `payload`. Nothing service-specific belongs at the envelope level.
+      properties:
+        event:
+          type: string
+          description: The event name, matching the message name and routing key
+        version:
+          type: integer
+          minimum: 1
+          description: Payload schema version. Additive optional fields do not bump it.
+        id:
+          allOf: [{ $ref: '#/components/schemas/Uuid' }]
+          description: |
+            Unique per event instance. THE idempotency key — consumers dedupe on this. A
+            redelivery carries the same id; a genuinely new event never does.
+        occurred_at:
+          type: string
+          format: date-time
+          description: |
+            When the fact happened (transaction commit), NOT when it was published or
+            received. Outbox relay lag means published_at could be much later.
+        correlation_id:
+          type: string
+          maxLength: 128
+          description: Propagated unchanged from the originating request.
+      required: [event, version, id, occurred_at, correlation_id]
+
+  messages:
+    BookingHeld:
+      name: BookingHeld
+      title: A booking was created in held state
+      summary: 'Producer: booking. Consumers: payment.'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: BookingHeld }
+              payload:
+                type: object
+                properties:
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  customer_id: { $ref: '#/components/schemas/Uuid' }
+                  product_id: { $ref: '#/components/schemas/Uuid' }
+                  resource_id: { $ref: '#/components/schemas/Uuid' }
+                  reservation_id: { $ref: '#/components/schemas/Uuid' }
+                  starts_at: { type: string, format: date-time }
+                  ends_at: { type: string, format: date-time }
+                  hold_expires_at:
+                    type: string
+                    format: date-time
+                    description: After this instant the hold is swept unless payment confirmed it
+                  total_minor: { type: integer, minimum: 0 }
+                  currency: { type: string, pattern: '^[A-Z]{3}$' }
+                required:
+                  [booking_id, customer_id, product_id, resource_id, reservation_id,
+                   starts_at, ends_at, hold_expires_at, total_minor, currency]
+            required: [payload]
+
+    BookingConfirmed:
+      name: BookingConfirmed
+      title: A booking was confirmed after successful payment
+      summary: 'Producer: booking. Consumers: notification, availability.'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: BookingConfirmed }
+              payload:
+                type: object
+                properties:
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  customer_id: { $ref: '#/components/schemas/Uuid' }
+                  product_id: { $ref: '#/components/schemas/Uuid' }
+                  resource_id: { $ref: '#/components/schemas/Uuid' }
+                  reservation_id: { $ref: '#/components/schemas/Uuid' }
+                  payment_id: { $ref: '#/components/schemas/Uuid' }
+                  starts_at: { type: string, format: date-time }
+                  ends_at: { type: string, format: date-time }
+                  total_minor: { type: integer, minimum: 0 }
+                  currency: { type: string, pattern: '^[A-Z]{3}$' }
+                required:
+                  [booking_id, customer_id, product_id, resource_id, reservation_id,
+                   payment_id, starts_at, ends_at, total_minor, currency]
+            required: [payload]
+      x-notes: |
+        Deliberately carries NO customer email or name. Notification resolves the recipient
+        from the customer id at send time. Putting PII in an event copies it into every
+        broker log, DLQ, and consumer database, which fights the GDPR work in NFR-4.
+
+    BookingCancelled:
+      name: BookingCancelled
+      title: A booking reached the cancelled terminal state
+      summary: 'Producer: booking. Consumers: availability.'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: BookingCancelled }
+              payload:
+                type: object
+                properties:
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  customer_id: { $ref: '#/components/schemas/Uuid' }
+                  resource_id: { $ref: '#/components/schemas/Uuid' }
+                  reservation_id:
+                    oneOf:
+                      - { $ref: '#/components/schemas/Uuid' }
+                      - { type: 'null' }
+                    description: Null if the hold was already released
+                  previous_status:
+                    type: string
+                    enum: [held, confirmed]
+                    description: |
+                      Which state it came from. `confirmed` means money changed hands and a
+                      refund may be owed; `held` means nothing was charged.
+                  reason:
+                    type: string
+                    enum: [payment_failed, hold_expired, customer_cancelled, operator_cancelled]
+                required: [booking_id, customer_id, resource_id, previous_status, reason]
+            required: [payload]
+
+    PaymentSucceeded:
+      name: PaymentSucceeded
+      title: Stripe confirmed a charge
+      summary: 'Producer: payment. Consumers: booking.'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: PaymentSucceeded }
+              payload:
+                type: object
+                properties:
+                  payment_id: { $ref: '#/components/schemas/Uuid' }
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  amount_minor: { type: integer, minimum: 0 }
+                  currency: { type: string, pattern: '^[A-Z]{3}$' }
+                  provider_payment_id:
+                    type: string
+                    description: Stripe PaymentIntent id. A reference, never an instrument.
+                required: [payment_id, booking_id, amount_minor, currency, provider_payment_id]
+            required: [payload]
+      x-notes: |
+        Contains no card data, by construction (PCI — see payment.yaml).
+
+    PaymentFailed:
+      name: PaymentFailed
+      title: Stripe declined or cancelled a charge
+      summary: 'Producer: payment. Consumers: booking.'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: PaymentFailed }
+              payload:
+                type: object
+                properties:
+                  payment_id: { $ref: '#/components/schemas/Uuid' }
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  amount_minor: { type: integer, minimum: 0 }
+                  currency: { type: string, pattern: '^[A-Z]{3}$' }
+                  failure_code:
+                    type: string
+                    description: Stripe decline code, e.g. card_declined, expired_card
+                required: [payment_id, booking_id, amount_minor, currency, failure_code]
+            required: [payload]
+
+    ReservationCreated:
+      name: ReservationCreated
+      title: A time window was successfully held for a resource
+      summary: 'Producer: availability. Consumers: none in the slice (audit/read models later).'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: ReservationCreated }
+              payload:
+                type: object
+                properties:
+                  reservation_id: { $ref: '#/components/schemas/Uuid' }
+                  resource_id: { $ref: '#/components/schemas/Uuid' }
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  starts_at: { type: string, format: date-time }
+                  ends_at: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time }
+                required:
+                  [reservation_id, resource_id, booking_id, starts_at, ends_at, expires_at]
+            required: [payload]
+
+    ReservationReleased:
+      name: ReservationReleased
+      title: A held window was freed and is bookable again
+      summary: 'Producer: availability. Consumers: booking.'
+      contentType: application/json
+      payload:
+        allOf:
+          - { $ref: '#/components/schemas/Envelope' }
+          - type: object
+            properties:
+              event: { const: ReservationReleased }
+              payload:
+                type: object
+                properties:
+                  reservation_id: { $ref: '#/components/schemas/Uuid' }
+                  resource_id: { $ref: '#/components/schemas/Uuid' }
+                  booking_id: { $ref: '#/components/schemas/Uuid' }
+                  starts_at: { type: string, format: date-time }
+                  ends_at: { type: string, format: date-time }
+                  reason:
+                    type: string
+                    enum: [payment_failed, booking_cancelled, hold_expired]
+                    description: |
+                      `hold_expired` is the TTL sweeper. Booking consumes that case to cancel
+                      the abandoned booking — it is the only reason Booking must react to.
+                required: [reservation_id, resource_id, booking_id, starts_at, ends_at, reason]
+            required: [payload]
