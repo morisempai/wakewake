@@ -20,6 +20,7 @@ paths:
   /healthz:
     get:
       tags: [health]
+      operationId: catalogHealthz
       summary: Liveness probe
       security: []
       responses:
@@ -36,6 +37,7 @@ paths:
   /readyz:
     get:
       tags: [health]
+      operationId: catalogReadyz
       summary: Readiness probe — checks database connectivity
       security: []
       responses:

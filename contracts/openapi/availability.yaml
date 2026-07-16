@@ -27,6 +27,7 @@ paths:
   /healthz:
     get:
       tags: [health]
+      operationId: availabilityHealthz
       summary: Liveness probe
       security: []
       responses:
@@ -43,6 +44,7 @@ paths:
   /readyz:
     get:
       tags: [health]
+      operationId: availabilityReadyz
       summary: Readiness probe — checks database and broker connectivity
       security: []
       responses:

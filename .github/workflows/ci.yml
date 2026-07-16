@@ -40,6 +40,36 @@ jobs:
             --fail-severity=error \
             --display-only-failures
 
+      # A lint rule that matches nothing reports success. Without this step, a typo in a
+      # rule's JSONPath would silently disable it and the job above would still go green —
+      # manufacturing confidence in checks that aren't running. The fixture violates every
+      # custom rule once; each must fire.
+      - name: Ruleset self-test — prove the custom rules are not inert
+        run: |
+          set -o pipefail
+          out=$(npx --yes @stoplight/spectral-cli@6 lint \
+                  contracts/.spectral-fixtures/violations.yaml \
+                  --ruleset .spectral.yaml \
+                  --format text 2>&1) || true
+          echo "$out"
+
+          missing=0
+          for rule in booking-paths-are-versioned \
+                      booking-no-verbs-in-paths \
+                      booking-snake-case-properties \
+                      booking-timestamps-end-in-at \
+                      booking-error-envelope-required \
+                      booking-security-defined; do
+            if echo "$out" | grep -q "$rule"; then
+              echo "  fired:  $rule"
+            else
+              echo "::error::Rule '$rule' did not fire on a fixture that violates it — the rule is inert and is checking nothing."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "OK — all custom rules fire."
+
   lint-asyncapi:
     name: Lint AsyncAPI spec
     runs-on: ubuntu-latest
