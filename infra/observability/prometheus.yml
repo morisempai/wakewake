@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Metrics arrive via OTLP write receiver from the collector.
+# Add scrape jobs here for services that also expose /metrics directly.
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

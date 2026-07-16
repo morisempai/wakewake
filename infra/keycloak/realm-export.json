@@ -1,0 +1,61 @@
+{
+  "realm": "booking",
+  "enabled": true,
+  "displayName": "Watercraft Booking",
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      { "name": "customer", "description": "End customer who books watercraft" },
+      { "name": "sales", "description": "Salesperson / seller" },
+      { "name": "ops", "description": "Operations / admin console user" },
+      { "name": "sre", "description": "Site reliability / observability access" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "booking-web",
+      "name": "Public customer web app (PKCE)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:5173/*", "http://localhost:3000/*"],
+      "webOrigins": ["+"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    },
+    {
+      "clientId": "booking-gateway",
+      "name": "API gateway (confidential, token introspection)",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "secret": "gateway_dev_secret_replace_via_vault"
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "google",
+      "providerId": "google",
+      "enabled": false,
+      "_comment": "Enable and supply clientId/clientSecret from Vault in real envs.",
+      "config": { "clientId": "REPLACE_VIA_VAULT", "clientSecret": "REPLACE_VIA_VAULT" }
+    }
+  ],
+  "users": [
+    {
+      "username": "test.customer",
+      "enabled": true,
+      "email": "customer@example.com",
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "Customer",
+      "credentials": [{ "type": "password", "value": "customer_dev_pw", "temporary": false }],
+      "realmRoles": ["customer"]
+    }
+  ]
+}
