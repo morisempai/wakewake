@@ -1,0 +1,18 @@
+# Protected areas require review from the owning team.
+# Root rules: services may NOT edit contracts/, shared/, .github/, or other services
+# without a linked contract-change / shared-change issue.
+
+# Cross-cutting sources of truth
+/contracts/        @platform-team
+/shared/           @platform-team
+/.github/          @platform-team
+/infra/            @platform-team @sre-team
+/docs/adr/         @architecture
+
+# Services — owned by their teams
+/services/gateway/       @platform-team
+/services/catalog/       @catalog-team
+/services/availability/  @availability-team
+/services/booking/       @booking-team
+/services/payment/       @payment-team
+/services/notification/  @notification-team

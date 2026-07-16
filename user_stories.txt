@@ -1,0 +1,39 @@
+Operation:
+	- As part of operation team I want to have an admin for managing system (orders, bookings, clients activities, errors) as well as number of instruments for solving client issues.
+	- As part of operation team I want to have monitoring dashboard with functional metrics, errors and traces in it for each service plus umbrella with summary status all services. 
+	- As part of operation team I want to have CD pipeline for delivering on each environment. 
+Security:
+	- As part of security team I want to have an audit log for all activities in admin console.
+	- As part of security team I want all environments to run on a different cloud providers accounts
+	- As part of security team I want all cloud infrastucture to be separated for each environment (dev, prod) + dedicated account for audit
+	- As part of security team I want all external api calls to be available only throght dedicated gateway, withoud direct access to service 
+	- As part of security team I want all services with ui (e.g. grafana, opensearch, admin console) have sso authorization
+	- As part of security team I want authorization to all development, integration, delivery and cloud instruments would be available only throght openauth protocol
+	- As part of security team I want be able to give fine grained access control to all resources
+	- As part of security team I want all secrets (certificates, passwords, secret codes) to be stored in centrilized vault storage (or similar instruments)
+Reliability:
+	- As part of SRE team I want dashboard with sla slo metrics for each service
+	- As part of SRE team I want to get a notification when sla slo metrics are close to limit
+	- As part of SRE team I want most of the services to be run as a containers
+	- As part of SRE team I want service update without unavailability (by canary/blue-green deployment stratagy or rolling update)
+	- As part of SRE team I want to site to have SLO 99.9% uptime 
+	- As part of SRE team I want all services to comunicate to eachother via ascync methods (like RabbitMQ, kafka)
+	- As part of SRE team for orders related services to have zero time RPO for all complited user transactions
+	- As part of SRE I want be able to deploy arbitrary number of environments using iac instrumets (ansible, terraform etc.) 
+Business:
+	- As an salesman I want to present and sell our pruducts, services, bookings on a site with several payment options
+	- As an salesman I want to be able to split bills during booking (with different options for each person in booking)
+	- As an salesman I want to be able to show booking schadule with up to date reservations
+	- As an salesman I want to notify our clients about new deals and services
+	- As an salesman I want to be able to create Promocodes/referal links and bind them to specific sellers 
+	- As an buisness owner I want simple registration proccess via google, x or other popular platforms 
+	- As an buisness owner I want that several persons couldn't book/rent the same place or peace of equipment
+	- As an buisness owner, for each client I want to have status of ther orders/bookings
+	- As an buisness owner I want to notify people about status of their orders
+SEO:
+	- As an SEO expert I want to beeing able to add analitics instruments (Google analytics etc) and edit pages content, keywords
+Development:
+	- As part of development team I want be able to run all services localy.
+	- As part of development team I want be able to inspect traces and other service runtime info.
+Designer:
+	- As a designer I want to have CMS instrumens to control style, add new content, etc.

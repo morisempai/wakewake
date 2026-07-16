@@ -1,0 +1,14 @@
+apiVersion: 1
+
+# Per-service dashboards + an umbrella "all services" status board are added
+# as JSON files under ./json/ in M4. This provider auto-loads them.
+providers:
+  - name: booking-dashboards
+    orgId: 1
+    folder: Booking
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: true
