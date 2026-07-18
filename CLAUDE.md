@@ -46,7 +46,9 @@ over `contracts/`. It is not a service runtime. See the Makefile header.
 ## Local environment
 
 - `docker compose up` from repo root starts all services + Postgres + RabbitMQ
-- `npm test` inside a service runs its unit tests; `npm run test:contract` runs contract tests
+- `make check` runs gofmt, vet, build, `go test -race`, and the contract linters
+- `go test ./...` inside a service runs its unit tests; contract and integration tests are
+  behind build tags (`-tags contract`, `-tags integration`) — see the testing-standards skill
 - Never test against anything remote
 
 ## When unsure

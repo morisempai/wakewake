@@ -11,67 +11,104 @@ description: >
 
 # Service Template
 
-<!-- EDIT: entire file assumes TypeScript + NestJS + Postgres + RabbitMQ. Retarget as needed. -->
+Services are **Go** (ADR-0008). Node.js appears in this repo only to run the contract linters
+over `contracts/`; it is never a service runtime.
 
 ## Directory layout (mandatory)
 
 ```
 services/<name>/
 ├── CLAUDE.md              # agent identity: responsibilities, contracts, hard rules
-├── src/
-│   ├── main.ts            # bootstrap only — no logic
-│   ├── config.ts          # typed config, reads env, fails fast on missing vars
-│   ├── health/            # /healthz (liveness), /readyz (checks db+broker)
-│   ├── api/               # HTTP layer: controllers + DTO validation, NO business logic
-│   ├── domain/            # business logic, pure where possible, no framework imports
+├── go.mod                 # one module per service — dependencies owned as exclusively as data
+├── cmd/<name>/main.go     # bootstrap only: read config, wire deps, start, shut down. No logic.
+├── internal/              # compiler-enforced privacy: nothing here is importable by another service
+│   ├── config/            # env → typed struct, validated once, fails fast
+│   ├── health/            # /healthz (liveness), /readyz (checks db + broker)
+│   ├── api/               # HTTP layer: handlers + request validation, NO business logic
+│   ├── domain/            # business logic, no framework or driver imports
 │   ├── infra/             # db repositories, event publisher/consumer, external clients
 │   └── events/            # consumer handlers (thin: validate → call domain)
-├── tests/
-│   ├── unit/              # mirrors src/ structure
-│   └── contract/          # provider/consumer contract tests
 ├── migrations/            # SQL migrations, sequential, never edited after merge
 ├── Dockerfile
-├── package.json
 └── README.md              # what it owns, how to run it, links to its contracts
 ```
+
+Use `internal/` rather than a flat package tree: Go refuses at compile time to let another
+module import it. Hard rule #6's data ownership gets the same enforcement for code.
+
+New modules must be added to the root `go.work` `use` list, or the workspace ignores them.
+`go.work` pins the Go version — match it in `go.mod`; do not raise one without the other.
+
+## Test placement
+
+Go convention puts `_test.go` files **next to the code they test**, in the same package, not in
+a separate tree. Follow it — `internal/domain/booking_test.go`, not `tests/unit/...`.
+See `testing-standards` for what belongs in each layer and how integration tests are tagged.
 
 ## Layering rule
 
 `api`/`events` → `domain` → `infra`. Never skip layers, never import upward.
-Controllers and consumers contain zero business decisions — they validate input,
-call one domain method, map the result. If a controller has an `if` about business
-state, it's in the wrong layer.
+Handlers and consumers contain zero business decisions — they validate input, call one domain
+method, map the result. If a handler has an `if` about business state, it's in the wrong layer.
+
+In Go, invert the dependency with interfaces: `domain` **declares** the narrow interface it
+needs (`type Reservations interface { Insert(...) error }`) and `infra` implements it. The
+interface belongs to the consumer, not the implementation — that is what keeps `domain` free of
+`pgx` and `amqp` imports and unit-testable with plain fakes.
 
 ## Config
 
-- All config via env vars, read ONCE in `config.ts` into a typed, validated object.
-  Missing required var = crash at startup with a clear message, not a runtime surprise.
-- No secrets in code, compose files committed with real values, or logs. Local dev
-  values go in `.env.example` (committed) / `.env` (gitignored).
+- All config via env vars, read ONCE at startup into a typed, validated struct in
+  `internal/config`. Missing required var = fail before serving, with a message naming the var.
+- Pass the config struct explicitly down the call chain. No package-level globals, no `init()`
+  reading env — both make tests order-dependent and hide what a component actually needs.
+- No secrets in code, in committed compose files, or in logs. Local dev values go in
+  `.env.example` (committed) / `.env` (gitignored).
 
 ## Logging & observability
 
-- Structured JSON logs via the shared logger (`shared/logger`). Fields always present:
-  `service`, `level`, `correlation_id`, `event`/`route`.
-- Correlation ID: taken from incoming header/event envelope, generated at the edge if
-  absent, propagated to every outgoing call, event, and log line.
-- Log levels: `error` = someone should look; `warn` = degraded but handled;
-  `info` = business events; `debug` = off in production. Never log PII or tokens.
-- Every HTTP handler and consumer emits duration metrics. <!-- EDIT: prom-client conventions -->
+- Structured JSON via stdlib `log/slog`. Fields always present: `service`, `level`,
+  `correlation_id`, `event`/`route`.
+- Carry the correlation ID in `context.Context` and take a `context.Context` as the first
+  parameter of anything that logs, calls out, or touches the DB. This is what makes propagation
+  automatic rather than something each call site has to remember.
+- Correlation ID: taken from incoming header/event envelope, generated at the edge if absent,
+  propagated unchanged to every outgoing call, event, and log line.
+- Log levels: `error` = someone should look; `warn` = degraded but handled; `info` = business
+  events; `debug` = off in production. Never log PII or tokens.
+- Metrics via `prometheus/client_golang`; traces via `go.opentelemetry.io/otel` (ADR-0007).
+  Every HTTP handler and consumer emits duration metrics.
+
+## Errors
+
+- Wrap with `fmt.Errorf("...: %w", err)` so callers can `errors.Is`/`errors.As`. Never discard
+  an error to satisfy the compiler — `_ = err` needs a comment explaining why it is safe.
+- `domain` returns domain error values (`var ErrSlotUnavailable = errors.New(...)`), and `api`
+  maps them to the HTTP codes in `contracts/openapi/<service>.yaml`. Driver errors must not
+  leak upward: `infra` translates them — e.g. Postgres SQLSTATE `23P01` (exclusion constraint
+  violation, ADR-0003) becomes `ErrSlotUnavailable`, which `api` renders as
+  `409 reservation_overlap`. That mapping is a contract obligation, not an implementation
+  detail; test it.
 
 ## Database
 
-- One database per service; schema owned exclusively by it (Hard rule 6).
-- Migrations: `migrations/NNNN_description.sql`, applied by CI, never by app at boot
-  in production. New columns nullable-or-defaulted first; destructive changes need an ADR.
+- One database per service; schema owned exclusively by it (Hard rule #6).
+- `pgx` directly. No ORM without an ADR — ADR-0003 puts the core invariant in a Postgres
+  exclusion constraint, and an abstraction that hides SQLSTATE codes hides the invariant firing.
+- Migrations: `migrations/NNNN_description.sql`, applied by CI, never by the app at boot in
+  production. New columns nullable-or-defaulted first; destructive changes need an ADR.
 
 ## Dockerfile
 
-Multi-stage: build stage → slim runtime (`node:22-alpine`), non-root user,
-`HEALTHCHECK` hitting `/healthz`, no dev dependencies in final image.
+Multi-stage: `golang:<version from go.work>` build stage → minimal runtime. Build with
+`CGO_ENABLED=0` for a static binary, copy it into `gcr.io/distroless/static:nonroot` (or
+`alpine` if a shell is genuinely needed), run as non-root, `HEALTHCHECK` hitting `/healthz`.
+No toolchain or source in the final image.
 
 ## Scaffolding a new service
 
-Copy `services/_template/` if it exists; otherwise follow this file exactly.
-Then: add compose entry, add CI matrix entry (via `shared-change` issue — `.github/` is
-protected), create its CLAUDE.md, and verify `docker compose up <name>` passes `/readyz`.
+Follow this file exactly. Then: add the module to `go.work`, add a compose entry, add a CI
+matrix entry, create its `CLAUDE.md`, and verify `docker compose up <name>` passes `/readyz`.
+
+`.github/` is protected — the CI matrix entry goes through a `shared-change` issue, not a
+direct edit.
