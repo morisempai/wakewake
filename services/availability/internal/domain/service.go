@@ -145,3 +145,15 @@ func (s *Service) Sweep(ctx context.Context, limit int) (int, error) {
 
 	return released, errors.Join(failures...)
 }
+
+// CompensateCancelledBooking is the transition the BookingCancelled consumer applies.
+//
+// It lives here rather than in internal/events because *which* release reason a cancelled
+// booking implies is a domain decision, and the events layer is meant to validate and delegate,
+// not to choose. Exposed as a Transition so the consumer can run it inside the transaction
+// inbox.Process already opened — the handler's writes and the dedupe row must commit together.
+func (s *Service) CompensateCancelledBooking() Transition {
+	return func(current Reservation) (Reservation, []Emission, error) {
+		return current.Release(ReasonBookingCancelled, s.now())
+	}
+}
