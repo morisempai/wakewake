@@ -127,11 +127,41 @@ jobs:
           done
           echo "Checked $count module(s)."
 
-          # Green above means "the packages compile", NOT "the services work". Every service is
-          # a doc.go placeholder until the per-service agents write them in M2.
+          # Green above means "the packages compile", NOT "the services work". Services are
+          # doc.go placeholders until the per-service agents write them in M2.
           if [ -z "$(git ls-files '*_test.go')" ]; then
             echo "::warning::No Go tests exist yet — M2 has not started. This is not a passing test suite."
           fi
+
+      # Contract tests are behind `//go:build contract`, so the default `go test` above SKIPS
+      # them entirely — it reports "[no test files]" and goes green. That is how a drift guard
+      # becomes decorative: it exists, it passes locally, and it never runs on any PR.
+      #
+      # These are the tests that make hand-written AsyncAPI structs safe (ADR-0009). If they are
+      # not running, the structs have no guarantee behind them at all.
+      - name: Contract tests (-tags contract)
+        run: |
+          set -o pipefail
+          ran=0
+          for dir in $(go list -m -f '{{.Dir}}'); do
+            # Only modules that actually have contract-tagged files.
+            if ! grep -rlq '//go:build contract' "$dir" 2>/dev/null; then
+              continue
+            fi
+            echo "::group::contract: $(basename "$dir")"
+            ( cd "$dir" && go test -tags contract -race ./... )
+            echo "::endgroup::"
+            ran=$((ran + 1))
+          done
+
+          # A loop that matched nothing would pass silently — the same failure mode this step
+          # exists to prevent. shared/contracts carries the envelope drift tests, so zero here
+          # means they were deleted or the tag was renamed, and that must be loud.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No contract-tagged tests were found. The AsyncAPI drift guard is the only thing keeping the hand-written event structs honest (ADR-0009) — if it has vanished, say so rather than passing."
+            exit 1
+          fi
+          echo "Ran contract tests in $ran module(s)."
 
   # Cheap structural checks that don't need a toolchain. These catch the class of mistake
   # that is invisible in review but breaks a consumer at runtime.
