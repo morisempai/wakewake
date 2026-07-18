@@ -115,6 +115,23 @@ jobs:
       #
       # Checked here rather than trusted to review: this is the kind of import someone adds at
       # 5pm to get one thing working, and it never gets removed.
+      # Generated code is committed (ADR-0009) so agents can read the types they implement and
+      # Docker builds need no codegen step. Committed output rots unless something checks it, so
+      # this regenerates and fails on any diff.
+      #
+      # It also covers the embedded spec copies under shared/contracts/specs/: those are copies
+      # of contracts/, and a copy that silently drifts from its source is worse than no copy —
+      # the contract tests would keep validating against the stale version and passing.
+      - name: Generated contract code is up to date
+        run: |
+          make contracts-gen
+          if ! git diff --quiet shared/contracts/; then
+            echo "::error::shared/contracts is stale — run 'make contracts-gen' and commit the result."
+            git diff --stat shared/contracts/
+            exit 1
+          fi
+          echo "OK — generated contract code matches contracts/."
+
       - name: Domain layer must not import shared/platform
         run: |
           violations=$(grep -rln 'shared/platform' --include='*.go' services/*/internal/domain/ 2>/dev/null || true)
