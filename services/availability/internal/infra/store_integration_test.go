@@ -95,6 +95,12 @@ func countRows(t *testing.T, pool *pgxpool.Pool, table string) int {
 // The goroutines are released together by a shared start channel rather than being launched in a
 // loop. Without that they serialise on goroutine startup, the first commits before the second
 // begins, and the test passes without ever creating the contention it claims to test.
+//
+// CAVEAT worth knowing before trusting this as a concurrency proof: the effective parallelism is
+// capped by the connection pool, which the shared testkit sizes at max(4, NumCPU). On a 2-core
+// CI runner the callers past the fourth queue for a connection and meet an already-committed
+// row rather than a live race. The invariant is still demonstrated — exactly one winner, decided
+// by the database — but the number of callers genuinely racing is the pool size, not N.
 func TestConcurrentReservesOfOneWindowLeaveExactlyOneWinner_Issue5_AC1(t *testing.T) {
 	t.Parallel()
 
