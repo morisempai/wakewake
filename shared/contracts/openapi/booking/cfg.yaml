@@ -1,0 +1,13 @@
+# oapi-codegen config for booking. Generation options live HERE, never as x-go-* extensions in the
+# spec: contracts/ is language-neutral by design, and a Go-specific hint in an OpenAPI document
+# would leak one implementation language into a contract four services read.
+package: booking
+output: zz_generated.go
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true
+  client: true
+  embedded-spec: false
+output-options:
+  skip-prune: true

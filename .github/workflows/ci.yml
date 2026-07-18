@@ -108,6 +108,40 @@ jobs:
           fi
           echo "OK — gofmt clean."
 
+      # ADR-0009: internal/domain may import shared/contracts (pure types) but NEVER
+      # shared/platform, which carries pgx, amqp, and otel. A domain layer that imports a
+      # database driver is the layering violation service-template forbids, and it is much
+      # cheaper to prevent than to unpick once handlers depend on it.
+      #
+      # Checked here rather than trusted to review: this is the kind of import someone adds at
+      # 5pm to get one thing working, and it never gets removed.
+      # Generated code is committed (ADR-0009) so agents can read the types they implement and
+      # Docker builds need no codegen step. Committed output rots unless something checks it, so
+      # this regenerates and fails on any diff.
+      #
+      # It also covers the embedded spec copies under shared/contracts/specs/: those are copies
+      # of contracts/, and a copy that silently drifts from its source is worse than no copy —
+      # the contract tests would keep validating against the stale version and passing.
+      - name: Generated contract code is up to date
+        run: |
+          make contracts-gen
+          if ! git diff --quiet shared/contracts/; then
+            echo "::error::shared/contracts is stale — run 'make contracts-gen' and commit the result."
+            git diff --stat shared/contracts/
+            exit 1
+          fi
+          echo "OK — generated contract code matches contracts/."
+
+      - name: Domain layer must not import shared/platform
+        run: |
+          violations=$(grep -rln 'shared/platform' --include='*.go' services/*/internal/domain/ 2>/dev/null || true)
+          if [ -n "$violations" ]; then
+            echo "::error::internal/domain imports shared/platform (ADR-0009). Domain logic must stay free of pgx/amqp/otel — declare an interface in domain and implement it in infra."
+            echo "$violations"
+            exit 1
+          fi
+          echo "OK — no domain package imports shared/platform."
+
       # `./...` at the workspace root matches nothing: the root is not itself a module, and the
       # pattern does not descend into the modules listed in go.work. Iterate the workspace
       # modules instead — same coverage, correctly expanded. Guard against the module list
