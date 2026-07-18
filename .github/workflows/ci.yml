@@ -189,7 +189,7 @@ jobs:
               continue
             fi
             echo "::group::integration: $(basename "$dir")"
-            ( cd "$dir" && go test -tags integration -race -timeout 15m ./... )
+            ( cd "$dir" && go test -tags integration -race -v -timeout 15m ./... )
             echo "::endgroup::"
             ran=$((ran + 1))
           done

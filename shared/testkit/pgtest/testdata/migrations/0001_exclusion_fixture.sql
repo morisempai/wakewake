@@ -21,5 +21,5 @@ CREATE TABLE fixture_reservation (
   CONSTRAINT fixture_no_overlap EXCLUDE USING gist (
     resource_id WITH =,
     during      WITH &&
-  ) WHERE (status <> 'released')
+  )
 );
