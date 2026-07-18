@@ -29,9 +29,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      # Pinned to a major range and run via npx: the repo has no lockfile yet (no service
-      # packages exist until M2), so `pnpm install --frozen-lockfile` would fail. Revisit
-      # when M2 introduces real dependencies — see the lockfile note in the M1 PR.
+      # Pinned to a major range and run via npx. The services are Go (ADR-0008), so there is no
+      # Node project here to install from — Node exists solely to run this linter and the
+      # AsyncAPI one. That also retires the "we need a lockfile by M2" note from the M1 PR:
+      # there will never be Node dependencies to lock.
       - name: Spectral lint
         run: |
           npx --yes @stoplight/spectral-cli@6 lint \
@@ -83,6 +84,54 @@ jobs:
       - name: AsyncAPI validate
         run: |
           npx --yes @asyncapi/cli@2 validate contracts/asyncapi/booking-events.yaml
+
+  # The services are Go (ADR-0008). This job exists from the moment the module layout does,
+  # because go.work and the per-service go.mod files were authored without a Go toolchain
+  # available locally — CI is the first thing that actually compiles them. Do not treat their
+  # correctness as reviewed until this job has been green once.
+  go:
+    name: Go build, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Not gofmt'd:"; echo "$unformatted"
+            exit 1
+          fi
+          echo "OK — gofmt clean."
+
+      # `./...` at the workspace root matches nothing: the root is not itself a module, and the
+      # pattern does not descend into the modules listed in go.work. Iterate the workspace
+      # modules instead — same coverage, correctly expanded. Guard against the module list
+      # coming back empty, or this loop would pass by doing nothing at all.
+      - name: Build, vet, test each workspace module
+        run: |
+          set -o pipefail
+          mods=$(go list -m -f '{{.Dir}}')
+          [ -n "$mods" ] || { echo "::error::go.work lists no modules — this job would check nothing."; exit 1; }
+
+          count=0
+          for dir in $mods; do
+            echo "::group::$(basename "$dir")"
+            ( cd "$dir" && go build ./... && go vet ./... && go test -race ./... )
+            echo "::endgroup::"
+            count=$((count + 1))
+          done
+          echo "Checked $count module(s)."
+
+          # Green above means "the packages compile", NOT "the services work". Every service is
+          # a doc.go placeholder until the per-service agents write them in M2.
+          if [ -z "$(git ls-files '*_test.go')" ]; then
+            echo "::warning::No Go tests exist yet — M2 has not started. This is not a passing test suite."
+          fi
 
   # Cheap structural checks that don't need a toolchain. These catch the class of mistake
   # that is invisible in review but breaks a consumer at runtime.
@@ -139,9 +188,9 @@ jobs:
     steps:
       - name: Report which stages exist
         run: |
-          echo "Implemented: lint (OpenAPI, AsyncAPI, invariants)"
+          echo "Implemented: lint (OpenAPI, AsyncAPI, invariants), Go build/vet/gofmt"
           echo "Not yet implemented — no service code exists (M2):"
-          echo "  - unit tests"
+          echo "  - unit tests (the Go test step runs, but there are no _test.go files to run)"
           echo "  - contract tests (provider verification against contracts/openapi/)"
           echo "  - image build"
           echo "  - integration tests (Testcontainers: Postgres + RabbitMQ)"

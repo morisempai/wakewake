@@ -12,7 +12,9 @@ Microservices booking. Monorepo layout:
 - `shared/` — shared libraries (protected, CODEOWNERS-gated)
 - `.github/workflows/` — CI/CD (protected)
 
-Stack: TypeScript (Node 22), NestJS, PostgreSQL, RabbitMQ, Docker. <!-- EDIT if different -->
+Stack: Go 1.23, PostgreSQL, RabbitMQ, Docker (ADR-0008, superseding ADR-0001's stack choice).
+Node 22 is present for one reason only: running the contract linters (Spectral, AsyncAPI CLI)
+over `contracts/`. It is not a service runtime. See the Makefile header.
 
 ## Hard rules (non-negotiable)
 
@@ -44,7 +46,9 @@ Stack: TypeScript (Node 22), NestJS, PostgreSQL, RabbitMQ, Docker. <!-- EDIT if 
 ## Local environment
 
 - `docker compose up` from repo root starts all services + Postgres + RabbitMQ
-- `npm test` inside a service runs its unit tests; `npm run test:contract` runs contract tests
+- `make check` runs gofmt, vet, build, `go test -race`, and the contract linters
+- `go test ./...` inside a service runs its unit tests; contract and integration tests are
+  behind build tags (`-tags contract`, `-tags integration`) — see the testing-standards skill
 - Never test against anything remote
 
 ## When unsure

@@ -43,11 +43,14 @@ Stripe webhook, which is what emits `PaymentSucceeded` / `PaymentFailed`.
 ## Validating locally
 
 ```bash
-pnpm contracts:lint          # both of the below
-pnpm contracts:lint:openapi  # Spectral, using .spectral.yaml
-pnpm contracts:lint:asyncapi # AsyncAPI CLI
+make contracts-lint            # both of the below
+make contracts-lint-openapi    # Spectral, using .spectral.yaml
+make contracts-lint-asyncapi   # AsyncAPI CLI
 ```
 
-CI runs the same checks on every PR touching `contracts/**`. These invoke `npx` with pinned
-majors rather than workspace dependencies, because the repo has no lockfile until M2 introduces
-real service packages.
+These need **Node 22** (`.nvmrc`), even though the services are Go (ADR-0008). Spectral and the
+AsyncAPI CLI lint YAML; what implements the specs is irrelevant to them. Node is in this repo for
+these two commands and nothing else.
+
+CI runs the same checks on every PR. They invoke `npx` with pinned majors rather than installed
+dependencies, so there is no Node lockfile to maintain for a repo with no Node code.

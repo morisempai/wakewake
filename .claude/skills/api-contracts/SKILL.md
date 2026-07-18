@@ -14,9 +14,11 @@ description: >
 ## Ground rules
 
 - Specs in `contracts/openapi/<service>.yaml` (OpenAPI 3.1) and
-  `contracts/asyncapi/crm-events.yaml` (AsyncAPI) are the source of truth.
-- Generate/validate types from specs; never hand-write a DTO that drifts from the spec.
-  <!-- EDIT: we use openapi-typescript + ajv for runtime validation -->
+  `contracts/asyncapi/booking-events.yaml` (AsyncAPI) are the source of truth.
+- Generate/validate types from specs; never hand-write a struct that drifts from the spec.
+  Go: `oapi-codegen` for server types from OpenAPI, `kin-openapi` to validate real responses
+  against the spec at test time (see `testing-standards`). A hand-written struct only proves
+  the code agrees with itself.
 - Service agents NEVER edit `contracts/`. Wrong/missing contract → issue labeled
   `contract-change` with: what's needed, why, affected consumers, compatible-or-breaking.
 

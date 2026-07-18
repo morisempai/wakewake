@@ -1,15 +1,15 @@
-# Dependencies
-node_modules/
-.pnpm-store/
-
-# Build output
+# Go build output
+/bin/
 dist/
-build/
-*.tsbuildinfo
+*.exe
+*.test
+*.out
 
-# Nx
-.nx/cache
-.nx/workspace-data
+# Generated. go.work itself IS committed — it defines the module layout (ADR-0008).
+go.work.sum
+
+# Node — present only for the contract linters (Spectral, AsyncAPI CLI). See the Makefile header.
+node_modules/
 
 # Env & secrets (NEVER commit real secrets — use Vault)
 .env
@@ -22,7 +22,8 @@ logs/
 
 # Test / coverage
 coverage/
-.nyc_output/
+coverage.out
+coverage.html
 
 # IDE
 .idea/
