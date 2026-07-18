@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +37,18 @@ import (
 )
 
 func main() {
+	// The container HEALTHCHECK runs the binary itself against its own probe. The runtime image
+	// is distroless, so there is no curl, wget, or shell to do it with, and pulling in a shell
+	// just to answer "is this process alive" would be a larger attack surface than the check is
+	// worth.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := probe(); err != nil {
+			fmt.Fprintf(os.Stderr, "availability: healthcheck: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil && !errors.Is(err, context.Canceled) {
 		// Written to stderr rather than logged: a failure before the logger exists has nowhere
 		// else to go, and one after it still deserves to be the last thing on the terminal.
@@ -184,4 +197,31 @@ func newReservationID() (string, error) {
 		return "", fmt.Errorf("availability: generating uuid: %w", err)
 	}
 	return id.String(), nil
+}
+
+// probe performs the container health check: a GET against this process's own /healthz.
+//
+// Liveness only. It deliberately does NOT call /readyz — failing a HEALTHCHECK restarts the
+// container, and restarting because a dependency is briefly unreachable turns a database blip
+// into a crash loop.
+func probe() error {
+	addr := os.Getenv("HTTP_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	res, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("/healthz returned %d", res.StatusCode)
+	}
+	return nil
 }

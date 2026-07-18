@@ -256,8 +256,10 @@ func (s *Store) Busy(ctx context.Context, resourceID string, from, to time.Time)
 	}
 	defer rows.Close()
 
-	// Non-nil so an empty result marshals as `[]` rather than `null`. The OpenAPI schema types
-	// `busy` as an array and makes it required; `null` would fail validation.
+	// Non-nil so an empty result is an empty slice rather than nil. The API layer rebuilds the
+	// response array anyway, so this is not what keeps `busy` from marshalling as `null` — it is
+	// here so that a future caller ranging over the result of this method does not have to think
+	// about the distinction.
 	windows := make([]domain.Window, 0)
 	for rows.Next() {
 		var w domain.Window
@@ -270,6 +272,16 @@ func (s *Store) Busy(ctx context.Context, resourceID string, from, to time.Time)
 		return nil, fmt.Errorf("availability: reading busy windows: %w", err)
 	}
 	return windows, nil
+}
+
+// Now returns the database's current time, so the sweeper's scan and its per-row re-check agree
+// on what "expired" means.
+func (s *Store) Now(ctx context.Context) (time.Time, error) {
+	var now time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
+		return time.Time{}, fmt.Errorf("availability: reading the database clock: %w", err)
+	}
+	return now.UTC(), nil
 }
 
 // ExpiredHolds returns candidate ids for the sweeper.

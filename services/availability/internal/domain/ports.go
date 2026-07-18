@@ -61,6 +61,15 @@ type Store interface {
 	// Busy returns the live (held or confirmed) windows overlapping [from, to) for one resource.
 	Busy(ctx context.Context, resourceID string, from, to time.Time) ([]Window, error)
 
+	// Now returns the DATABASE's current time.
+	//
+	// The sweeper needs it because its two halves would otherwise consult two different clocks:
+	// ExpiredHolds selects on `expires_at <= now()` in SQL, while the re-check under the row lock
+	// runs in Go. expires_at itself is written from the database clock, so if the application
+	// clock lags, the scan keeps proposing rows that the re-check keeps declining — a hold that
+	// expires late while the sweeper spins on it doing nothing. One clock, asked once per pass.
+	Now(ctx context.Context) (time.Time, error)
+
 	// ExpiredHolds returns up to limit ids of held reservations past their expiry.
 	//
 	// Advisory: each one is re-checked under its row lock by ReleaseIfExpired, because a hold

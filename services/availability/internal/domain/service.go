@@ -112,6 +112,14 @@ func (s *Service) Busy(ctx context.Context, resourceID string, from, to time.Tim
 // would leave every hold behind it locked until a human noticed — inventory leaking away
 // quietly, which is the failure mode ADR-0011 exists to prevent, arriving by another route.
 func (s *Service) Sweep(ctx context.Context, limit int) (int, error) {
+	// The database's clock, not this process's. expires_at is written by the database and the
+	// scan below filters on it in SQL, so re-checking due-ness against time.Now() here would be
+	// comparing two clocks that drift apart — see Store.Now.
+	asOf, err := s.store.Now(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("availability: reading the database clock: %w", err)
+	}
+
 	ids, err := s.store.ExpiredHolds(ctx, limit)
 	if err != nil {
 		return 0, fmt.Errorf("availability: scanning for expired holds: %w", err)
@@ -128,7 +136,7 @@ func (s *Service) Sweep(ctx context.Context, limit int) (int, error) {
 		}
 
 		_, changed, err := s.store.Apply(ctx, id, func(current Reservation) (Reservation, []Emission, error) {
-			return current.ReleaseIfExpired(s.now())
+			return current.ReleaseIfExpired(asOf)
 		})
 		if err != nil {
 			// ErrNotFound is not a failure: rows are only deleted by retention, and a

@@ -34,6 +34,12 @@ type fakeStore struct {
 
 	expired    []string
 	expiredErr error
+
+	// dbNow stands in for the database clock. Distinct from the injected Clock on purpose: the
+	// sweeper must use THIS one, and a test that made them equal could not tell the difference.
+	dbNow    time.Time
+	dbNowErr error
+	nowCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -94,6 +100,14 @@ func (f *fakeStore) Apply(_ context.Context, id string, fn Transition) (Reservat
 func (f *fakeStore) Busy(_ context.Context, resourceID string, from, to time.Time) ([]Window, error) {
 	f.busyArg.resourceID, f.busyArg.from, f.busyArg.to = resourceID, from, to
 	return f.busy, f.busyErr
+}
+
+func (f *fakeStore) Now(context.Context) (time.Time, error) {
+	f.nowCalls++
+	if f.dbNowErr != nil {
+		return time.Time{}, f.dbNowErr
+	}
+	return f.dbNow, nil
 }
 
 func (f *fakeStore) ExpiredHolds(_ context.Context, _ int) ([]string, error) {
@@ -324,6 +338,7 @@ func TestSweepReleasesEveryDueHoldAndCountsOnlyRealChanges_Issue5_AC2(t *testing
 	rescued.ExpiresAt = nil
 
 	store := newFakeStore()
+	store.dbNow = now
 	for _, r := range []Reservation{due, alsoDue, rescued} {
 		store.byID[r.ID] = r
 	}
@@ -368,6 +383,7 @@ func TestSweepKeepsGoingAfterOneReservationFails(t *testing.T) {
 	fine.ID = "01912d5a-7f3e-7c1a-9b2e-0000000000b2"
 
 	store := newFakeStore()
+	store.dbNow = now
 	store.byID[broken.ID] = broken
 	store.byID[fine.ID] = fine
 	store.expired = []string{broken.ID, fine.ID}
@@ -460,6 +476,7 @@ func TestSweepTreatsAVanishedHoldAsNormal(t *testing.T) {
 	t.Parallel()
 
 	store := newFakeStore()
+	store.dbNow = createdAt
 	store.expired = []string{"01912d5a-7f3e-7c1a-9b2e-0000000000c1"}
 	store.applyErr["01912d5a-7f3e-7c1a-9b2e-0000000000c1"] = ErrNotFound
 	svc := NewService(store, fixedClock(createdAt), sequentialIDs(), holdTTL)
@@ -481,6 +498,7 @@ func TestSweepStopsWhenTheContextIsCancelled(t *testing.T) {
 
 	expiry := createdAt.Add(holdTTL)
 	store := newFakeStore()
+	store.dbNow = expiry.Add(time.Second)
 	for _, id := range []string{"01912d5a-7f3e-7c1a-9b2e-0000000000d1", "01912d5a-7f3e-7c1a-9b2e-0000000000d2"} {
 		r := heldReservation(t, expiry)
 		r.ID = id
@@ -519,5 +537,118 @@ func TestGetReturnsTheStoredReservation(t *testing.T) {
 	}
 	if got.ID != want.ID || got.Status != want.Status {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// The BookingCancelled consumer runs this transition inside the transaction inbox.Process
+// opened. Which reason a cancelled booking implies is a domain decision, so it is pinned here
+// rather than in the consumer.
+func TestCompensateCancelledBookingReleasesWithBookingCancelled(t *testing.T) {
+	t.Parallel()
+
+	now := createdAt.Add(time.Minute)
+	svc := NewService(newFakeStore(), fixedClock(now), sequentialIDs(), holdTTL)
+
+	next, emissions, err := svc.CompensateCancelledBooking()(heldReservation(t, createdAt.Add(holdTTL)))
+	if err != nil {
+		t.Fatalf("transition returned %v, want nil", err)
+	}
+
+	if next.Status != StatusReleased {
+		t.Errorf("status = %q, want %q", next.Status, StatusReleased)
+	}
+	if next.ReleasedReason == nil || *next.ReleasedReason != ReasonBookingCancelled {
+		t.Errorf("released_reason = %v, want %q", next.ReleasedReason, ReasonBookingCancelled)
+	}
+	if !next.UpdatedAt.Equal(now) {
+		t.Errorf("updated_at = %s, want the injected clock's %s", next.UpdatedAt, now)
+	}
+	if len(emissions) != 1 {
+		t.Fatalf("emitted %d event(s), want 1", len(emissions))
+	}
+}
+
+// A booking cancelled after its reservation was already released must not produce a second
+// ReservationReleased — Booking reacts to that event, and a duplicate is a second cancellation.
+func TestCompensateCancelledBookingIsANoOpOnAnAlreadyReleasedReservation(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(newFakeStore(), fixedClock(createdAt), sequentialIDs(), holdTTL)
+
+	reason := ReasonHoldExpired
+	released := heldReservation(t, createdAt.Add(holdTTL))
+	released.Status = StatusReleased
+	released.ExpiresAt = nil
+	released.ReleasedReason = &reason
+
+	_, emissions, err := svc.CompensateCancelledBooking()(released)
+	if err != nil {
+		t.Fatalf("transition returned %v, want nil", err)
+	}
+	if len(emissions) != 0 {
+		t.Errorf("emitted %d event(s), want 0", len(emissions))
+	}
+}
+
+// The sweeper must judge due-ness by the DATABASE clock, not this process's.
+//
+// expires_at is written by the database and ExpiredHolds filters on it in SQL, so a lagging
+// application clock would have the scan keep proposing rows that the re-check keeps declining:
+// the hold expires late while the sweeper spins on it doing nothing. The two clocks are set
+// deliberately apart here, straddling the expiry, so a regression to time.Now() fails.
+func TestSweepJudgesExpiryByTheDatabaseClockNotTheAppClock_Issue5_AC2(t *testing.T) {
+	t.Parallel()
+
+	expiry := createdAt.Add(holdTTL)
+
+	due := heldReservation(t, expiry)
+	due.ID = "01912d5a-7f3e-7c1a-9b2e-0000000000e1"
+
+	store := newFakeStore()
+	store.byID[due.ID] = due
+	store.expired = []string{due.ID}
+	// The database says the hold is due...
+	store.dbNow = expiry.Add(time.Second)
+
+	// ...while this process's clock still thinks there is an hour left.
+	svc := NewService(store, fixedClock(expiry.Add(-time.Hour)), sequentialIDs(), holdTTL)
+
+	released, err := svc.Sweep(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("Sweep returned %v, want nil", err)
+	}
+
+	if released != 1 {
+		t.Errorf("released = %d, want 1 — the sweeper consulted the application clock", released)
+	}
+	if store.nowCalls != 1 {
+		t.Errorf("the database clock was read %d time(s), want exactly 1 per pass", store.nowCalls)
+	}
+	if got := store.byID[due.ID]; got.Status != StatusReleased {
+		t.Errorf("status = %q, want %q", got.Status, StatusReleased)
+	}
+}
+
+// A sweep that cannot read the database clock must abort rather than fall back to a local one:
+// falling back is precisely the two-clock comparison this design removed.
+func TestSweepAbortsWhenTheDatabaseClockIsUnreadable(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	store.dbNowErr = errors.New("connection reset")
+	store.expired = []string{"01912d5a-7f3e-7c1a-9b2e-0000000000f1"}
+
+	svc := NewService(store, fixedClock(createdAt), sequentialIDs(), holdTTL)
+
+	released, err := svc.Sweep(context.Background(), 100)
+
+	if err == nil {
+		t.Error("Sweep returned nil error when the database clock was unreadable")
+	}
+	if released != 0 {
+		t.Errorf("released = %d, want 0", released)
+	}
+	if store.applyCalls != 0 {
+		t.Errorf("store.Apply was called %d time(s) without a trustworthy clock, want 0", store.applyCalls)
 	}
 }
