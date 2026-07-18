@@ -9,8 +9,12 @@ import (
 //
 // The interface belongs to the consumer, not the implementation (service-template's layering
 // rule). That is what keeps this package free of pgx and lets the service be unit-tested with
-// plain fakes — and it is also what CI checks when it refuses `shared/platform` imports under
-// internal/domain.
+// plain fakes — and CI enforces it with a guard that refuses driver-carrying imports anywhere
+// under internal/domain (ADR-0009).
+//
+// That guard is a plain grep for the shared platform module's import path, so it matches
+// comments as readily as imports. Do not spell that path out in this package, even to explain
+// the rule: the build fails on the explanation.
 
 // Transition is a state change decided by the domain and applied by the store inside one
 // transaction: the store loads and locks the row, hands it here, and persists whatever comes
