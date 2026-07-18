@@ -1,14 +1,22 @@
-go 1.23.0
+go 1.26.0
 
 // One module per service (ADR-0008). Each service owns its dependencies as it owns its database:
 // exclusively. A shared root module would let a bump in one service silently move another.
 //
 // `gateway` is absent on purpose — ADR-0006 makes it off-the-shelf (Kong/APISIX/Traefik) with
 // routing config, not Go code, so it has nothing to build.
+//
+// shared/ is three modules rather than one (ADR-0009): notification has no HTTP API, catalog
+// publishes no events, and nothing needs testcontainers at runtime. A single shared module would
+// put the Docker client dependency tree into every service's go.sum, so a testcontainers bump
+// would churn five services at once.
 use (
 	./services/availability
 	./services/booking
 	./services/catalog
 	./services/notification
 	./services/payment
+	./shared/contracts
+	./shared/platform
+	./shared/testkit
 )

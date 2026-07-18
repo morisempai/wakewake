@@ -1,6 +1,11 @@
 # ADR-0003: No double-booking via Postgres exclusion constraint + hold/TTL saga
 
-- **Status:** Proposed  <!-- agents propose; a human sets Accepted (adr-writing skill) -->
+- **Status:** Proposed; constraint definition amended by ADR-0011
+  <!-- ADR-0011 makes the exclusion constraint PARTIAL (`WHERE status <> 'released'`). As written
+       below it is total, which would let every released hold poison its window permanently. The
+       Decision text is left unedited (adr-writing: never edit past decisions) — read it through
+       that amendment. -->
+  <!-- agents propose; a human sets Accepted (adr-writing skill) -->
 - **Date:** 2026-07-15
 - **Deciders:** Architecture (pending human sign-off)
 - **Related:** Business story ("several persons couldn't book the same place/equipment"); BOOK-2; ADR-0002
