@@ -134,9 +134,49 @@ jobs:
 
       - name: Domain layer must not import shared/platform
         run: |
-          violations=$(grep -rln 'shared/platform' --include='*.go' services/*/internal/domain/ 2>/dev/null || true)
-          if [ -n "$violations" ]; then
-            echo "::error::internal/domain imports shared/platform (ADR-0009). Domain logic must stay free of pgx/amqp/otel — declare an interface in domain and implement it in infra."
+          set -o pipefail
+
+          # Asks the compiler for the real import graph rather than grepping the source.
+          #
+          # The first version of this was `grep -rln 'shared/platform'`, which matched prose as
+          # readily as imports: the availability agent hit it when a comment EXPLAINING this very
+          # rule failed the build, with an error claiming an import that did not exist. A guard
+          # whose false positives punish accurate documentation trains people to write worse
+          # comments, and it costs a debugging session each time.
+          # Asks `go list` for the import graph. Behaviour worth recording, because it is not
+          # obvious and I checked it rather than assuming:
+          #
+          #   - go list parses only up to the import block, so a forbidden import is still
+          #     detected in a file that does not compile. Verified by planting the import AND
+          #     trailing garbage: caught.
+          #   - It exits 0 on such a file, so exit status alone cannot be trusted. `-e` surfaces
+          #     genuine load errors in .Error, which the UNPARSEABLE branch turns into a failure
+          #     rather than a silent pass.
+          #
+          # The build step would also catch broken code, but a guard that only works because
+          # another step runs first breaks the day someone reorders the job.
+          violations=""
+          checked=0
+          for dir in $(go list -m -f '{{.Dir}}' | grep '/services/'); do
+            [ -d "$dir/internal/domain" ] || continue
+
+            out=$(cd "$dir" && go list -e -f '{{if .Error}}UNPARSEABLE {{.ImportPath}}: {{.Error}}{{else}}{{$p := .ImportPath}}{{range .Imports}}{{$p}} -> {{.}}
+          {{end}}{{end}}' ./internal/domain/... 2>&1)
+
+            if echo "$out" | grep -q '^UNPARSEABLE'; then
+              echo "::error::Cannot read the import graph in $dir — the ADR-0009 rule is unverifiable here, which is a failure, not a pass."
+              echo "$out" | grep '^UNPARSEABLE'
+              exit 1
+            fi
+
+            checked=$((checked + 1))
+            found=$(echo "$out" | grep 'shared/platform' || true)
+            [ -n "$found" ] && violations="$violations$found"$'\n'
+          done
+          echo "Checked $checked domain package(s)."
+
+          if [ -n "$(echo "$violations" | tr -d '[:space:]')" ]; then
+            echo "::error::internal/domain imports shared/platform (ADR-0009). Domain logic must stay free of pgx/amqp/otel — declare a narrow interface in domain and implement it in infra."
             echo "$violations"
             exit 1
           fi
