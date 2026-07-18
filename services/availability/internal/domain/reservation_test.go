@@ -418,6 +418,22 @@ func TestCreatedEmissionCarriesTheContractPayload(t *testing.T) {
 	}
 }
 
+// Status.Live is the Go-side statement of the exclusion constraint's
+// `WHERE (status <> 'released')` predicate (ADR-0011). If the two ever disagree, a status is
+// silently non-blocking in the database while the code believes it blocks.
+func TestOnlyReleasedIsNotLive(t *testing.T) {
+	t.Parallel()
+
+	for _, s := range []Status{StatusHeld, StatusConfirmed} {
+		if !s.Live() {
+			t.Errorf("%q must be live: the exclusion constraint blocks on it", s)
+		}
+	}
+	if StatusReleased.Live() {
+		t.Errorf("%q must not be live: it is terminal history the constraint ignores", StatusReleased)
+	}
+}
+
 func TestReleaseReasonValidMatchesTheContractEnum(t *testing.T) {
 	t.Parallel()
 
