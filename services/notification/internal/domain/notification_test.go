@@ -17,6 +17,8 @@ func TestRecipientRedactHidesTheLocalPartButKeepsTheDomain(t *testing.T) {
 		{"ordinary address", "customer-42@example.test", "c***@example.test"},
 		{"single char local", "a@example.test", "a***@example.test"},
 		{"no at sign is fully hidden", "not-an-address", "***"},
+		{"empty domain is fully hidden", "user@", "***"},
+		{"leading at is fully hidden", "@example.test", "***"},
 		{"empty is fully hidden", "", "***"},
 	}
 	for _, tc := range cases {
@@ -82,6 +84,7 @@ func TestFormatMinorRendersTwoDecimalPlaces(t *testing.T) {
 		{5, "USD", "0.05 USD"},
 		{0, "GBP", "0.00 GBP"},
 		{100, "EUR", "1.00 EUR"},
+		{-150, "EUR", "-1.50 EUR"},
 	}
 	for _, tc := range cases {
 		got := FormatMinor(tc.minor, tc.currency)
