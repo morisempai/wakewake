@@ -65,6 +65,24 @@ type Message struct {
 	Body    string
 }
 
+// ChannelEmail is the only delivery channel in the slice. SMS/push are deferred; marketing
+// channels are out of scope entirely (CLAUDE.md).
+const ChannelEmail = "email"
+
+// SentRecord is the audit/idempotency row written when a confirmation is sent, keyed on the
+// envelope id (EventID). It carries the recipient in REDACTED form only — never the raw address —
+// so persisting it does not put PII at rest in the owned database (NFR-4). It is a plain value
+// with no driver types, so the domain stays import-clean; infra maps it onto the SQL row.
+type SentRecord struct {
+	EventID           string
+	BookingID         string
+	CustomerID        string
+	Channel           string
+	RecipientRedacted string
+	Subject           string
+	CorrelationID     string
+}
+
 // RecipientResolver turns a customer id into an address to email.
 //
 // It is a PORT with no real implementation in this slice: BookingConfirmed carries no email and
