@@ -1,3 +1,34 @@
 module github.com/morisempai/wakewake/services/catalog
 
 go 1.26.0
+
+require (
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/morisempai/wakewake/shared/contracts v0.0.0
+	github.com/morisempai/wakewake/shared/platform v0.0.0-00010101000000-000000000000
+)
+
+require github.com/getkin/kin-openapi v0.142.0 // indirect
+
+require (
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/google/uuid v1.6.0
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/oapi-codegen/runtime v1.6.0 // indirect
+	go.opentelemetry.io/otel v1.44.0 // indirect
+	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
+)
+
+// shared/ modules are never published or tagged — they are internal to this monorepo. The
+// replace directives make non-workspace builds work (GOWORK=off, and any Docker stage that
+// copies only the modules it needs), so builds do not depend on go.work being present.
+replace (
+	github.com/morisempai/wakewake/shared/contracts => ../../shared/contracts
+	github.com/morisempai/wakewake/shared/platform => ../../shared/platform
+	github.com/morisempai/wakewake/shared/testkit => ../../shared/testkit
+)
