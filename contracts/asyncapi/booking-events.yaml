@@ -201,7 +201,7 @@ components:
     BookingConfirmed:
       name: BookingConfirmed
       title: A booking was confirmed after successful payment
-      summary: 'Producer: booking. Consumers: notification, availability.'
+      summary: 'Producer: booking. Consumers: notification.'
       contentType: application/json
       payload:
         allOf:
