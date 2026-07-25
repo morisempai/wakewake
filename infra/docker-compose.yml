@@ -40,10 +40,13 @@ services:
       - "5672:5672"    # AMQP
       - "15672:15672"  # management UI
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
+      # check_port_connectivity verifies the AMQP listener on 5672 is actually accepting
+      # connections — plain `ping` reports the node up before the port is bound, which lets a
+      # dependent service connect too early and get "connection refused".
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 15
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
