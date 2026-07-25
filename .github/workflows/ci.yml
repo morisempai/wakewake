@@ -264,12 +264,17 @@ jobs:
           go-version-file: go.work
 
       - name: Integration tests (-tags integration)
+        # SMTP_HOST is set to "mailhog" — the config's OWN documented default — and aliased to
+        # localhost in /etc/hosts below. That way notification's config-defaults unit test (which
+        # asserts the default is "mailhog") still passes when run under this job, while AC1's
+        # delivery test reaches the Mailhog service container (published on localhost:1025/8025).
         env:
-          SMTP_HOST: localhost
+          SMTP_HOST: mailhog
           SMTP_PORT: "1025"
-          MAILHOG_API_URL: http://localhost:8025
+          MAILHOG_API_URL: http://mailhog:8025
         run: |
           set -o pipefail
+          echo "127.0.0.1 mailhog" | sudo tee -a /etc/hosts >/dev/null
           ran=0
           for dir in $(go list -m -f '{{.Dir}}'); do
             if ! grep -rlq '//go:build integration' "$dir" 2>/dev/null; then
