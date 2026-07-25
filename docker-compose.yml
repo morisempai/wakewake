@@ -1,0 +1,154 @@
+# =============================================================================
+# Root compose — the whole booking slice, runnable from the repo root:
+#
+#     docker compose up --build            # everything: infra + 5 services
+#     docker compose up --build catalog availability booking payment notification
+#
+# Platform infra (Postgres, RabbitMQ, Mailhog, Keycloak, Vault, observability) lives in
+# infra/docker-compose.yml and is pulled in via `include`. Bringing up only the app services
+# starts just their dependencies (Postgres/RabbitMQ/Mailhog/stripe-mock) and leaves the heavier
+# infra (Keycloak/Vault/Grafana stack) down unless you ask for it.
+#
+# Each service builds from the REPO ROOT context (its Dockerfile COPYs shared/ — see the service
+# Dockerfiles). Migrations are applied by the one-shot `migrate` container, because the services
+# do not migrate themselves. `stripe-mock` lets payment's createPayment succeed offline; the
+# webhook is driven by a locally-signed request (see the e2e script / STRIPE_WEBHOOK_SECRET).
+# =============================================================================
+name: booking-platform
+
+include:
+  - infra/docker-compose.yml
+
+x-postgres-url: &pg "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432"
+x-rabbit-url: &amqp "${RABBITMQ_URL:-amqp://booking:booking_dev_pw@rabbitmq:5672}"
+
+services:
+  # One-shot schema setup. App services wait for it to complete successfully.
+  migrate:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-booking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-booking_dev_pw}
+    volumes:
+      - ./:/repo:ro
+    entrypoint: ["/bin/sh", "/repo/infra/migrate.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Stripe API stand-in so createPayment works with no network and no real keys.
+  stripe-mock:
+    image: stripe/stripe-mock:latest
+    ports:
+      - "12111:12111"
+
+  catalog:
+    build:
+      context: .
+      dockerfile: services/catalog/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/catalog?sslmode=disable"
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  availability:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: services/availability/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/availability?sslmode=disable"
+      RABBITMQ_URL: *amqp
+      HTTP_ADDR: ":8080"
+      BOOKING_HOLD_TTL_SECONDS: ${BOOKING_HOLD_TTL_SECONDS:-900}
+      AVAILABILITY_SWEEP_INTERVAL_SECONDS: ${AVAILABILITY_SWEEP_INTERVAL_SECONDS:-30}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  booking:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: services/booking/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/booking?sslmode=disable"
+      RABBITMQ_URL: *amqp
+      HTTP_ADDR: ":8080"
+      BOOKING_HOLD_TTL_SECONDS: ${BOOKING_HOLD_TTL_SECONDS:-900}
+      AVAILABILITY_BASE_URL: "http://availability:8080"
+      CATALOG_BASE_URL: "http://catalog:8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8083:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  payment:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/payment?sslmode=disable"
+      RABBITMQ_URL: *amqp
+      HTTP_ADDR: ":8080"
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_dev}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_dev_secret}
+      STRIPE_BASE_URL: "http://stripe-mock:12111"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8084:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      stripe-mock:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+
+  notification:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/notification?sslmode=disable"
+      RABBITMQ_URL: *amqp
+      HTTP_ADDR: ":8080"
+      SMTP_HOST: ${SMTP_HOST:-mailhog}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8085:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
