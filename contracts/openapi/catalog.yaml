@@ -94,6 +94,7 @@ paths:
                 required: [data, next_cursor]
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /v1/products/{product_id}:
     get:
@@ -114,6 +115,7 @@ paths:
               schema: { $ref: '#/components/schemas/Product' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
 components:
   securitySchemes:
@@ -232,6 +234,11 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     NotFound:
       description: No such product
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: Unexpected server error. The response carries `internal_error` and a correlation id; the message never leaks internals.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

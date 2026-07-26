@@ -130,6 +130,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
     get:
       tags: [bookings]
@@ -158,6 +159,7 @@ paths:
                     type: [string, 'null']
                 required: [data, next_cursor]
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /v1/bookings/{booking_id}:
     get:
@@ -183,6 +185,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /v1/bookings/{booking_id}/actions/cancel:
     post:
@@ -223,6 +226,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
 components:
   securitySchemes:
@@ -358,6 +362,11 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     NotFound:
       description: No such booking
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: Unexpected server error. The response carries `internal_error` and a correlation id; the message never leaks internals.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

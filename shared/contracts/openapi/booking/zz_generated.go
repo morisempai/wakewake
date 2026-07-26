@@ -206,6 +206,9 @@ type BadRequest = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// ServerError defines model for ServerError.
+type ServerError = Error
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
@@ -1158,6 +1161,8 @@ type ListBookingsResponse struct {
 	}
 	// JSON401 the response for an HTTP 401 `application/json` response
 	JSON401 *Unauthorized
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -1171,6 +1176,11 @@ func (r ListBookingsResponse) GetJSON200() *struct {
 // GetJSON401 returns the response for an HTTP 401 `application/json` response
 func (r ListBookingsResponse) GetJSON401() *Unauthorized {
 	return r.JSON401
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r ListBookingsResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -1217,6 +1227,8 @@ type CreateBookingResponse struct {
 	JSON409 *Error
 	// JSON422 the response for an HTTP 422 `application/json` response
 	JSON422 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 	// JSON503 the response for an HTTP 503 `application/json` response
 	JSON503 *Error
 }
@@ -1249,6 +1261,11 @@ func (r CreateBookingResponse) GetJSON409() *Error {
 // GetJSON422 returns the response for an HTTP 422 `application/json` response
 func (r CreateBookingResponse) GetJSON422() *Error {
 	return r.JSON422
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r CreateBookingResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetJSON503 returns the response for an HTTP 503 `application/json` response
@@ -1296,6 +1313,8 @@ type GetBookingResponse struct {
 	JSON403 *Error
 	// JSON404 the response for an HTTP 404 `application/json` response
 	JSON404 *NotFound
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -1316,6 +1335,11 @@ func (r GetBookingResponse) GetJSON403() *Error {
 // GetJSON404 returns the response for an HTTP 404 `application/json` response
 func (r GetBookingResponse) GetJSON404() *NotFound {
 	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetBookingResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -1358,6 +1382,8 @@ type CancelBookingResponse struct {
 	JSON403 *Error
 	// JSON404 the response for an HTTP 404 `application/json` response
 	JSON404 *NotFound
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -1378,6 +1404,11 @@ func (r CancelBookingResponse) GetJSON403() *Error {
 // GetJSON404 returns the response for an HTTP 404 `application/json` response
 func (r CancelBookingResponse) GetJSON404() *NotFound {
 	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r CancelBookingResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -1641,6 +1672,13 @@ func ParseListBookingsResponse(rsp *http.Response) (*ListBookingsResponse, error
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
@@ -1702,6 +1740,13 @@ func ParseCreateBookingResponse(rsp *http.Response) (*CreateBookingResponse, err
 		}
 		response.JSON422 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
 		var dest Error
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -1756,6 +1801,13 @@ func ParseGetBookingResponse(rsp *http.Response) (*GetBookingResponse, error) {
 		}
 		response.JSON404 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
@@ -1802,6 +1854,13 @@ func ParseCancelBookingResponse(rsp *http.Response) (*CancelBookingResponse, err
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
 
 	}
 
@@ -2245,6 +2304,8 @@ type BadRequestJSONResponse Error
 
 type NotFoundJSONResponse Error
 
+type ServerErrorJSONResponse Error
+
 type UnauthorizedJSONResponse Error
 
 type BookingHealthzRequestObject struct {
@@ -2346,6 +2407,20 @@ func (response ListBookings401JSONResponse) VisitListBookingsResponse(w http.Res
 	return err
 }
 
+type ListBookings500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response ListBookings500JSONResponse) VisitListBookingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateBookingRequestObject struct {
 	Params CreateBookingParams
 	Body   *CreateBookingJSONRequestBody
@@ -2439,6 +2514,20 @@ func (response CreateBooking422JSONResponse) VisitCreateBookingResponse(w http.R
 	return err
 }
 
+type CreateBooking500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response CreateBooking500JSONResponse) VisitCreateBookingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateBooking503JSONResponse Error
 
 func (response CreateBooking503JSONResponse) VisitCreateBookingResponse(w http.ResponseWriter) error {
@@ -2518,6 +2607,20 @@ func (response GetBooking404JSONResponse) VisitGetBookingResponse(w http.Respons
 	return err
 }
 
+type GetBooking500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response GetBooking500JSONResponse) VisitGetBookingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CancelBookingRequestObject struct {
 	BookingId Uuid `json:"booking_id"`
 	Params    CancelBookingParams
@@ -2580,6 +2683,20 @@ func (response CancelBooking404JSONResponse) VisitCancelBookingResponse(w http.R
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBooking500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response CancelBooking500JSONResponse) VisitCancelBookingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }

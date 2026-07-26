@@ -34,16 +34,6 @@ const (
 	idempotencyKeyMaxLen = 255
 )
 
-// defaultReleaseReason is used when POST .../actions/release arrives without a body.
-//
-// DEVIATION, flagged for a contract-change issue: the spec marks the request body
-// `required: false` but makes `reason` required inside it, and says nothing about what an absent
-// body means. Rejecting it would contradict `required: false`; inventing a fourth reason would
-// contradict the enum. `booking_cancelled` is the closest honest reading — an unattributed
-// external release is the compensation path — but it is a choice this code should not have had
-// to make, since it lands in the audit trail and in the event Booking consumes.
-const defaultReleaseReason = domain.ReasonBookingCancelled
-
 // Server implements the generated strict server interface.
 type Server struct {
 	svc *domain.Service
@@ -167,10 +157,10 @@ func (s *Server) ConfirmReservation(ctx context.Context, request spec.ConfirmRes
 
 // ReleaseReservation frees a window. Contract: 200 | 404. Idempotent.
 func (s *Server) ReleaseReservation(ctx context.Context, request spec.ReleaseReservationRequestObject) (spec.ReleaseReservationResponseObject, error) {
-	reason := defaultReleaseReason
-	if request.Body != nil {
-		reason = domain.ReleaseReason(request.Body.Reason)
-	}
+	// The request body is `required: true` (contract): the generated body binding rejects a
+	// missing body with 400 before this handler runs, so request.Body is always present here and
+	// the reason is never defaulted.
+	reason := domain.ReleaseReason(request.Body.Reason)
 
 	reservation, err := s.svc.Release(ctx, request.ReservationId.String(), reason)
 	if err != nil {
