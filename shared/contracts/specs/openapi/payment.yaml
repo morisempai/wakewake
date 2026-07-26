@@ -130,6 +130,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /v1/payments/{payment_id}:
     get:
@@ -155,6 +156,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
   /v1/webhooks/stripe:
     post:
@@ -216,6 +218,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
 
 components:
   securitySchemes:
@@ -332,6 +335,11 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     NotFound:
       description: No such payment
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: Unexpected server error. The response carries `internal_error` and a correlation id; the message never leaks internals. On the webhook this signals Stripe to retry rather than drop the event.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

@@ -234,6 +234,9 @@ type BadRequest = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// ServerError defines model for ServerError.
+type ServerError = Error
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
@@ -1111,6 +1114,8 @@ type CreatePaymentResponse struct {
 	JSON409 *Error
 	// JSON422 the response for an HTTP 422 `application/json` response
 	JSON422 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 	// JSON502 the response for an HTTP 502 `application/json` response
 	JSON502 *Error
 }
@@ -1177,6 +1182,11 @@ func (r CreatePaymentResponse) GetJSON422() *Error {
 	return r.JSON422
 }
 
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r CreatePaymentResponse) GetJSON500() *ServerError {
+	return r.JSON500
+}
+
 // GetJSON502 returns the response for an HTTP 502 `application/json` response
 func (r CreatePaymentResponse) GetJSON502() *Error {
 	return r.JSON502
@@ -1222,6 +1232,8 @@ type GetPaymentResponse struct {
 	JSON403 *Error
 	// JSON404 the response for an HTTP 404 `application/json` response
 	JSON404 *NotFound
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -1242,6 +1254,11 @@ func (r GetPaymentResponse) GetJSON403() *Error {
 // GetJSON404 returns the response for an HTTP 404 `application/json` response
 func (r GetPaymentResponse) GetJSON404() *NotFound {
 	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPaymentResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -1282,6 +1299,8 @@ type HandleStripeWebhookResponse struct {
 	}
 	// JSON400 the response for an HTTP 400 `application/json` response
 	JSON400 *Error
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -1294,6 +1313,11 @@ func (r HandleStripeWebhookResponse) GetJSON200() *struct {
 // GetJSON400 returns the response for an HTTP 400 `application/json` response
 func (r HandleStripeWebhookResponse) GetJSON400() *Error {
 	return r.JSON400
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r HandleStripeWebhookResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -1609,6 +1633,13 @@ func ParseCreatePaymentResponse(rsp *http.Response) (*CreatePaymentResponse, err
 		}
 		response.JSON422 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 502:
 		var dest Error
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -1663,6 +1694,13 @@ func ParseGetPaymentResponse(rsp *http.Response) (*GetPaymentResponse, error) {
 		}
 		response.JSON404 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
@@ -1697,6 +1735,13 @@ func ParseHandleStripeWebhookResponse(rsp *http.Response) (*HandleStripeWebhookR
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
 
 	}
 
@@ -2051,6 +2096,8 @@ type BadRequestJSONResponse Error
 
 type NotFoundJSONResponse Error
 
+type ServerErrorJSONResponse Error
+
 type UnauthorizedJSONResponse Error
 
 type PaymentHealthzRequestObject struct {
@@ -2238,6 +2285,20 @@ func (response CreatePayment422JSONResponse) VisitCreatePaymentResponse(w http.R
 	return err
 }
 
+type CreatePayment500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response CreatePayment500JSONResponse) VisitCreatePaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreatePayment502JSONResponse Error
 
 func (response CreatePayment502JSONResponse) VisitCreatePaymentResponse(w http.ResponseWriter) error {
@@ -2317,6 +2378,20 @@ func (response GetPayment404JSONResponse) VisitGetPaymentResponse(w http.Respons
 	return err
 }
 
+type GetPayment500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response GetPayment500JSONResponse) VisitGetPaymentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type HandleStripeWebhookRequestObject struct {
 	Params HandleStripeWebhookParams
 	Body   *HandleStripeWebhookJSONRequestBody
@@ -2352,6 +2427,20 @@ func (response HandleStripeWebhook400JSONResponse) VisitHandleStripeWebhookRespo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type HandleStripeWebhook500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response HandleStripeWebhook500JSONResponse) VisitHandleStripeWebhookResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }

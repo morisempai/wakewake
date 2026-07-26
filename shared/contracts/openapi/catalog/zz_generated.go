@@ -170,6 +170,9 @@ type BadRequest = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// ServerError defines model for ServerError.
+type ServerError = Error
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
@@ -767,6 +770,8 @@ type ListProductsResponse struct {
 	JSON400 *BadRequest
 	// JSON401 the response for an HTTP 401 `application/json` response
 	JSON401 *Unauthorized
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -787,6 +792,11 @@ func (r ListProductsResponse) GetJSON400() *BadRequest {
 // GetJSON401 returns the response for an HTTP 401 `application/json` response
 func (r ListProductsResponse) GetJSON401() *Unauthorized {
 	return r.JSON401
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r ListProductsResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -827,6 +837,8 @@ type GetProductResponse struct {
 	JSON401 *Unauthorized
 	// JSON404 the response for an HTTP 404 `application/json` response
 	JSON404 *NotFound
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *ServerError
 }
 
 // GetJSON200 returns the response for an HTTP 200 `application/json` response
@@ -842,6 +854,11 @@ func (r GetProductResponse) GetJSON401() *Unauthorized {
 // GetJSON404 returns the response for an HTTP 404 `application/json` response
 func (r GetProductResponse) GetJSON404() *NotFound {
 	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetProductResponse) GetJSON500() *ServerError {
+	return r.JSON500
 }
 
 // GetBody returns the raw response body bytes
@@ -1028,6 +1045,13 @@ func ParseListProductsResponse(rsp *http.Response) (*ListProductsResponse, error
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
@@ -1067,6 +1091,13 @@ func ParseGetProductResponse(rsp *http.Response) (*GetProductResponse, error) {
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ServerError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
 
 	}
 
@@ -1414,6 +1445,8 @@ type BadRequestJSONResponse Error
 
 type NotFoundJSONResponse Error
 
+type ServerErrorJSONResponse Error
+
 type UnauthorizedJSONResponse Error
 
 type CatalogHealthzRequestObject struct {
@@ -1531,6 +1564,20 @@ func (response ListProducts401JSONResponse) VisitListProductsResponse(w http.Res
 	return err
 }
 
+type ListProducts500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response ListProducts500JSONResponse) VisitListProductsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetProductRequestObject struct {
 	ProductId Uuid `json:"product_id"`
 	Params    GetProductParams
@@ -1578,6 +1625,20 @@ func (response GetProduct404JSONResponse) VisitGetProductResponse(w http.Respons
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetProduct500JSONResponse struct{ ServerErrorJSONResponse }
+
+func (response GetProduct500JSONResponse) VisitGetProductResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }
