@@ -1,8 +1,9 @@
 # ADR-0008: Go for all services
 
-**Status:** proposed
+**Status:** Accepted
 **Date:** 2026-07-16
-**Deciders:** morisempai (pending sign-off)
+**Accepted:** 2026-07-26
+**Deciders:** morisempai
 **Related:** ADR-0001 (supersedes its stack choice only), ADR-0002, ADR-0003, issue #3
 
 ## Context
@@ -12,16 +13,31 @@ still `proposed` and was never signed off. No service code exists — `services/
 `CLAUDE.md` files and nothing else — so the stack is not yet load-bearing and the cost of
 changing it is close to zero. This window closes as soon as M2 writes the first handler.
 
-<!-- GAP: the rationale below is reconstructed, not supplied. The decision to use Go was made by
-     the user without stated reasons. Per this skill, Context must state constraints as facts with
-     sources, not vibes. A human must replace this block with the actual forces before setting
-     Accepted, or this ADR records a choice without recording why — the exact archaeology problem
-     ADRs exist to prevent. -->
+> **Acceptance note (2026-07-26):** the Context above is the 2026-07-16 snapshot that made the
+> switch cheap. Go has since been implemented across M1.5 and M2 — all five services are Go — while
+> this ADR sat `proposed` for want of a stated rationale. This acceptance records that rationale
+> (below); it formalizes a decision already carried out rather than opening a fresh one.
 
-Forces that are documented and that Go plausibly serves: `docs/nfr.md` targets 99.9% availability
-and RPO=0; ADR-0003 puts the double-booking invariant in Postgres, so the service layer around it
-is thin; ADR-0007 requires OpenTelemetry in every service. Contracts in `contracts/` are
-language-neutral (OpenAPI 3.1 + AsyncAPI 3.0) and constrain no implementation language.
+### Rationale (stated by the decider)
+
+Go was chosen for three properties weighed as decisive:
+
+- **Strict, small syntax.** Go's deliberately minimal surface and an uncompromising compiler —
+  unused imports and variables are errors, error returns are explicit, `gofmt` enforces one
+  canonical form — narrow the room for stylistic drift and a class of runtime surprises. Across
+  five services authored by separate agents, that uniformity is worth more than expressive
+  flexibility.
+- **Execution speed.** Compiled native binaries with low startup and per-request latency serve the
+  latency targets in `docs/nfr.md` (booking-hold p99 = 1 s) with headroom.
+- **Resource efficiency.** A small memory footprint and static binaries yield small container
+  images, matching the per-service container model in `infra/` and lowering per-service running
+  cost.
+
+These are the forces the decider stated. They act against a documented backdrop that Go also
+serves: `docs/nfr.md` targets 99.9% availability and RPO=0; ADR-0003 puts the double-booking
+invariant in Postgres, so the service layer around it is thin; ADR-0007 requires OpenTelemetry in
+every service. Contracts in `contracts/` are language-neutral (OpenAPI 3.1 + AsyncAPI 3.0) and
+constrain no implementation language.
 
 ## Decision
 
@@ -56,8 +72,10 @@ service language; `.nvmrc` and the lint CI jobs stay as they are.
 
 ## Alternatives considered
 
-- **Keep TypeScript/NestJS** — rejected by the user; no technical fault was identified with it,
-  and none is recorded here because none was given.
+- **Keep TypeScript/NestJS** — rejected. No fault was found with TypeScript itself; Go was
+  preferred for the three forces in Rationale (stricter syntax, faster execution, lower resource
+  use). The cost of the switch is real and recorded in Consequences — chiefly the loss of Nx's
+  affected-graph.
 - **Go for new services, TypeScript for existing** — rejected: no TypeScript services exist, so
   this would be a split toolchain bought for nothing.
 - **Rust** — not evaluated; not proposed.
