@@ -460,11 +460,36 @@ func TestReleaseReservationResponsesMatchTheSpec_Issue5_AC5(t *testing.T) {
 		}
 	})
 
-	// The spec marks the request body `required: false`, so this must not be rejected.
-	t.Run("200 with no body at all", func(t *testing.T) {
+	// The release request body is now `required: true` (issue #12): a reason is mandatory on
+	// every release, so the audit trail and the emitted `ReservationReleased.reason` are never
+	// guessed. A release with no body is therefore rejected by the generated body binding before
+	// this service's handler runs.
+	//
+	// CONTRACT GAP (issue #12): releaseReservation documents 200 | 404 | 500 but no 400, so this
+	// real 400 is a status the spec does not list. It cannot go through assertMatchesSpec, which
+	// would reject it as "status is not supported". What this service guarantees, and what this
+	// pins, is that the body is the contract's Error envelope carrying `validation_failed`. The
+	// tripwire below fires when release gains a documented 400, at which point this folds into the
+	// ordinary spec checks — exactly as the createReservation 500 case just did.
+	t.Run("400 when the body is absent — a reason is now mandatory", func(t *testing.T) {
 		t.Parallel()
 		h := newHarness(t, &fakeStore{reservation: heldReservation()}, false)
-		h.check(t, http.MethodPost, path, "", nil, http.StatusOK)
+		got := h.do(t, http.MethodPost, path, "", nil)
+
+		if got.status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400\nbody: %s", got.status, got.body)
+		}
+
+		assertBodyMatchesSchema(t, h.doc, "Error", got.body)
+
+		if !strings.Contains(string(got.body), `"code":"validation_failed"`) {
+			t.Errorf("the 400 body does not use the validation_failed code: %s", got.body)
+		}
+
+		if _, documented := operationResponses(t, h.doc,
+			"/v1/reservations/{reservation_id}/actions/release", http.MethodPost)["400"]; documented {
+			t.Error("the spec now documents a 400 on releaseReservation; fold this into the ordinary spec checks")
+		}
 	})
 
 	t.Run("200 releasing an already-released reservation is idempotent", func(t *testing.T) {
@@ -590,38 +615,27 @@ func TestACorrelationIDIsMintedWhenTheCallerSendsNone(t *testing.T) {
 	assertMatchesSpec(t, h.router, got)
 }
 
-// CONTRACT GAP, documented as a test rather than left implicit.
+// An unexpected fault — the store returns an error that maps to no domain case — produces a 500.
+// Now that the spec documents a 500 on createReservation (issue #12), that status is an ordinary
+// documented response and validates against the spec like any other, so h.check drives it through
+// assertMatchesSpec. This used to be a contract gap pinned only at the body level; the tripwire
+// that guarded it has fired and the case is now folded into the normal spec checks.
 //
-// The Error enum includes `internal_error`, but no operation in the spec declares a 5xx
-// response. So a genuine fault produces a response whose STATUS is undocumented, and
-// ValidateResponse rejects it with "status is not supported" — through no fault of this code.
-//
-// What this service can guarantee, and what this test pins, is that the BODY is the contract's
-// Error envelope. The missing 5xx declaration is raised as a contract-change candidate; when it
-// lands, this test should become an ordinary assertMatchesSpec case.
-func TestAnUnexpectedFailureStillReturnsTheContractErrorEnvelope_Issue5_AC5(t *testing.T) {
+// Two guarantees are pinned on top of the schema, because the Error envelope alone does not
+// express them: a 5xx body must not leak the underlying error (no driver text, no stack traces),
+// and it must carry `internal_error`.
+func TestAnUnexpectedFailureReturnsADocumented500_Issue5_AC5(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t, &fakeStore{insertErr: errors.New("the database fell over")}, false)
-	got := h.do(t, http.MethodPost, "/v1/reservations", reserveBody(windowStart, windowEnd), withKey(idempKey))
+	got := h.check(t, http.MethodPost, "/v1/reservations",
+		reserveBody(windowStart, windowEnd), withKey(idempKey), http.StatusInternalServerError)
 
-	if got.status != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500\nbody: %s", got.status, got.body)
-	}
-
-	assertBodyMatchesSchema(t, h.doc, "Error", got.body)
-
-	// 5xx bodies must not leak internals — no driver text, no stack traces.
 	if strings.Contains(string(got.body), "the database fell over") {
 		t.Errorf("the 500 body echoes the underlying error: %s", got.body)
 	}
 	if !strings.Contains(string(got.body), `"code":"internal_error"`) {
 		t.Errorf("the 500 body does not use the internal_error code: %s", got.body)
-	}
-
-	// And the documented statuses on this operation genuinely exclude 500, which is the gap.
-	if _, documented := operationResponses(t, h.doc, "/v1/reservations", http.MethodPost)["500"]; documented {
-		t.Error("the spec now documents a 500 on createReservation; fold this test back into the ordinary spec checks")
 	}
 }
 
