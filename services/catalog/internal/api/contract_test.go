@@ -446,37 +446,29 @@ func TestACorrelationIDIsMintedWhenTheCallerSendsNone_Issue13_AC6(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// CONTRACT GAP — no operation documents a 5xx
+// AC1 — an unexpected failure returns a documented 500
 // ---------------------------------------------------------------------------
 
-// The Error enum includes `internal_error`, but no products operation in the spec declares a 5xx
-// response. So a genuine fault produces a response whose STATUS is undocumented, and
-// ValidateResponse would reject it with "status is not supported" — through no fault of this code.
+// An unexpected fault — the store returns an error that maps to no domain case — produces a 500.
+// Now that the spec documents a 500 on listProducts (issue #12), that status is an ordinary
+// documented response and validates against the spec like any other, so h.check drives it through
+// assertMatchesSpec. This used to be a contract gap pinned only at the body level; the tripwire
+// that guarded it has fired and the case is now folded into the normal spec checks.
 //
-// What this service can guarantee, and what this test pins, is that the BODY is the contract's
-// Error envelope with the internal_error code and no leaked internals. The missing 5xx declaration
-// is raised as a contract-change candidate; when it lands, this becomes an ordinary spec check.
-func TestAnUnexpectedFailureStillReturnsTheContractErrorEnvelope_Issue13_AC1(t *testing.T) {
+// Two guarantees are pinned on top of the schema, because the Error envelope alone does not
+// express them: a 5xx body must not leak the underlying error (no driver text, no stack traces),
+// and it must carry `internal_error`.
+func TestAnUnexpectedFailureReturnsADocumented500_Issue13_AC1(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t, &fakeStore{listErr: errors.New("the database fell over")}, false)
-	got := h.do(t, http.MethodGet, "/v1/products", nil)
-
-	if got.status != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500\nbody: %s", got.status, got.body)
-	}
-
-	assertBodyMatchesSchema(t, h.doc, "Error", got.body)
+	got := h.check(t, http.MethodGet, "/v1/products", nil, http.StatusInternalServerError)
 
 	if strings.Contains(string(got.body), "the database fell over") {
 		t.Errorf("the 500 body echoes the underlying error: %s", got.body)
 	}
 	if !strings.Contains(string(got.body), `"code":"internal_error"`) {
 		t.Errorf("the 500 body does not use the internal_error code: %s", got.body)
-	}
-
-	if _, documented := operationResponses(t, h.doc, "/v1/products", http.MethodGet)["500"]; documented {
-		t.Error("the spec now documents a 500 on listProducts; fold this test back into the ordinary spec checks")
 	}
 }
 
