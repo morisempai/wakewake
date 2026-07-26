@@ -3,8 +3,10 @@ go 1.26.0
 // One module per service (ADR-0008). Each service owns its dependencies as it owns its database:
 // exclusively. A shared root module would let a bump in one service silently move another.
 //
-// `gateway` is absent on purpose — ADR-0006 makes it off-the-shelf (Kong/APISIX/Traefik) with
-// routing config, not Go code, so it has nothing to build.
+// `gateway` IS a Go module: ADR-0012 finalized the gateway as a custom Go service (superseding the
+// off-the-shelf assumption ADR-0006 left open), so it builds like any other service and must be
+// listed here — the CI build/test job iterates exactly these `use` entries, so a module missing
+// from this list is silently untested.
 //
 // shared/ is three modules rather than one (ADR-0009): notification has no HTTP API, catalog
 // publishes no events, and nothing needs testcontainers at runtime. A single shared module would
@@ -14,6 +16,7 @@ use (
 	./services/availability
 	./services/booking
 	./services/catalog
+	./services/gateway
 	./services/notification
 	./services/payment
 	./shared/contracts
