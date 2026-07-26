@@ -1,9 +1,10 @@
 # ADR-0006: API gateway as the sole external ingress
 
-- **Status:** Proposed  <!-- agents propose; a human sets Accepted (adr-writing skill) -->
+- **Status:** Accepted
 - **Date:** 2026-07-15
-- **Deciders:** Security, Architecture (pending human sign-off)
-- **Related:** Security story (external API only through dedicated gateway, no direct service access); ADR-0001
+- **Accepted:** 2026-07-26
+- **Deciders:** morisempai
+- **Related:** Security story (external API only through dedicated gateway, no direct service access); ADR-0001; ADR-0012 (finalizes the deferred gateway technology as a custom Go service)
 
 ## Context
 
