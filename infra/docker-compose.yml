@@ -60,9 +60,24 @@ services:
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-booking_dev_pw}
       KC_HEALTH_ENABLED: "true"
     ports:
-      - "8080:8080"
+      # Host :8088, not :8080 — the API gateway owns the canonical :8080 as sole ingress (ADR-0006).
+      # A token minted via this host port carries iss=http://localhost:8088/realms/booking, which is
+      # what the gateway's OIDC_ISSUER must equal. The gateway still fetches JWKS internally over
+      # keycloak:8080.
+      - "8088:8080"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    # The management interface on :9000 (KC_HEALTH_ENABLED) only starts listening AFTER the realm
+    # import finishes, so a passing /health/ready means the booking realm — and its JWKS — is live.
+    # The gateway gates on this: it fetches the JWKS synchronously at boot and would otherwise start
+    # against an empty key set and sit unready until keyfunc's next background refresh. The KC image
+    # has no curl/wget, so the probe uses bash's /dev/tcp against the management port.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/9000; printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3; grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
