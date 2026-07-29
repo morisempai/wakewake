@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/idempotency"
 	"github.com/morisempai/wakewake/shared/platform/outbox"
 	"github.com/morisempai/wakewake/shared/platform/pgerr"
@@ -55,7 +56,7 @@ var _ domain.Store = (*Store)(nil)
 // models it as string constants.
 const columns = `
   id, booking_id, status::text, amount_minor, currency, provider,
-  provider_payment_id, failure_code, created_at, updated_at`
+  provider_payment_id, failure_code, created_at, updated_at, correlation_id`
 
 const (
 	selectByIDSQL = `SELECT` + columns + ` FROM payment WHERE id = $1`
@@ -67,8 +68,8 @@ const (
 	selectByProviderForUpdateSQL = `SELECT` + columns + ` FROM payment WHERE provider_payment_id = $1 FOR UPDATE`
 
 	insertPaymentSQL = `
-INSERT INTO payment (id, booking_id, status, amount_minor, currency, provider, provider_payment_id, failure_code)
-VALUES ($1, $2, $3::payment_status, $4, $5, $6, $7, $8)
+INSERT INTO payment (id, booking_id, status, amount_minor, currency, provider, provider_payment_id, failure_code, correlation_id)
+VALUES ($1, $2, $3::payment_status, $4, $5, $6, $7, $8, $9)
 RETURNING` + columns
 
 	updatePaymentSQL = `
@@ -168,7 +169,7 @@ func (s *Store) InsertPayment(ctx context.Context, claim domain.Claim, p domain.
 
 		stored, err = scanPayment(tx.QueryRow(ctx, insertPaymentSQL,
 			p.ID, p.BookingID, string(p.Status), p.AmountMinor, p.Currency, p.Provider,
-			p.ProviderPaymentID, failureCodeArg(p)))
+			p.ProviderPaymentID, failureCodeArg(p), correlationArg(p)))
 		if err != nil {
 			if pgerr.Is(err, pgerr.UniqueViolation) && pgerr.ConstraintName(err) == bookingIDUnique {
 				return domain.ErrPaymentAlreadyExists
@@ -205,6 +206,18 @@ func (s *Store) RecordOutcome(ctx context.Context, stripeEventID, stripeType, pr
 		}
 		result.Found = true
 		result.Payment = current
+
+		// Re-hydrate the correlation id captured when this payment was created (issue #23). The Stripe
+		// webhook is an external callback with no X-Correlation-Id, so the middleware minted a fresh id
+		// for this request; using it would split the customer journey into two trace islands. Stamping
+		// the original id back onto the context here — BEFORE the outcome events are staged and the
+		// processing is logged — means the emitted PaymentSucceeded/PaymentFailed AND the log lines
+		// below all carry the id from the createPayment request. A legacy payment (NULL correlation_id,
+		// created before this feature) leaves the context untouched so the outbox falls back to
+		// minting one rather than stamping an empty id.
+		if current.CorrelationID != "" {
+			ctx = correlation.WithID(ctx, current.CorrelationID)
+		}
 
 		tag, err := tx.Exec(ctx, insertStripeEventSQL, stripeEventID, stripeType)
 		if err != nil {
@@ -292,6 +305,18 @@ func failureCodeArg(p domain.Payment) *string {
 	return p.FailureCode
 }
 
+// correlationArg binds the captured correlation id to the nullable correlation_id column. An empty id
+// (a payment created before the feature, or without one) is sent as NULL rather than an empty string,
+// so the legacy fallback in RecordOutcome and the outbox's mint-on-empty stay distinguishable from a
+// real id.
+func correlationArg(p domain.Payment) *string {
+	if p.CorrelationID == "" {
+		return nil
+	}
+	id := p.CorrelationID
+	return &id
+}
+
 // scanner is what pgx.Row and pgx.Rows share.
 type scanner interface {
 	Scan(dest ...any) error
@@ -299,15 +324,19 @@ type scanner interface {
 
 func scanPayment(row scanner) (domain.Payment, error) {
 	var (
-		p      domain.Payment
-		status string
+		p        domain.Payment
+		status   string
+		correlID *string // nullable: legacy rows predate correlation_id (issue #23)
 	)
 	if err := row.Scan(
 		&p.ID, &p.BookingID, &status, &p.AmountMinor, &p.Currency, &p.Provider,
-		&p.ProviderPaymentID, &p.FailureCode, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProviderPaymentID, &p.FailureCode, &p.CreatedAt, &p.UpdatedAt, &correlID,
 	); err != nil {
 		return domain.Payment{}, err
 	}
 	p.Status = domain.Status(status)
+	if correlID != nil {
+		p.CorrelationID = *correlID
+	}
 	return p, nil
 }

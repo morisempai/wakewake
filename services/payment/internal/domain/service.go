@@ -11,6 +11,11 @@ import (
 type CreateCommand struct {
 	BookingID   string
 	Idempotency Claim
+
+	// CorrelationID is the request's correlation id (the one the gateway forwarded), captured at the
+	// edge and persisted on the payment so the Stripe webhook can re-hydrate it onto the outcome
+	// events instead of the fresh id it would otherwise mint (issue #23).
+	CorrelationID string
 }
 
 // Service is the payment use-case layer: it decides, the store persists, and the Provider port
@@ -97,6 +102,12 @@ func (s *Service) CreatePayment(ctx context.Context, cmd CreateCommand) (Payment
 	}
 
 	p := NewPayment(paymentID, bctx.BookingID, bctx.AmountMinor, bctx.Currency, intent.ID, s.now())
+
+	// Remember the request's correlation id on the aggregate so the Stripe webhook — which arrives
+	// with no correlation header — can re-hydrate it onto the outcome events rather than minting a
+	// fresh one (issue #23). Captured at the edge (api layer) and threaded through the command so this
+	// package stays free of the correlation import.
+	p.CorrelationID = cmd.CorrelationID
 
 	stored, err := s.store.InsertPayment(ctx, cmd.Idempotency, p)
 	if err != nil {
