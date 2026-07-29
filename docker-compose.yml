@@ -1,8 +1,13 @@
 # =============================================================================
 # Root compose — the whole booking slice, runnable from the repo root:
 #
-#     docker compose up --build            # everything: infra + 5 services
-#     docker compose up --build catalog availability booking payment notification
+#     docker compose up --build            # everything: infra + gateway + 5 services
+#     docker compose up --build gateway    # gateway pulls in the services it proxies to
+#
+# The gateway is the ONLY host-published application port (:8080) — ADR-0006 puts every external
+# request through it (OIDC validation, correlation, rate limiting). The five services below listen
+# on :8080 INTERNALLY and publish no host ports; reach them only via the gateway. Keycloak moves to
+# host :8088 so the gateway can own the canonical :8080 (see infra/docker-compose.yml).
 #
 # Platform infra (Postgres, RabbitMQ, Mailhog, Keycloak, Vault, observability) lives in
 # infra/docker-compose.yml and is pulled in via `include`. Bringing up only the app services
@@ -43,6 +48,51 @@ services:
     ports:
       - "12111:12111"
 
+  # The API gateway is the ONLY host-published application port (ADR-0006, ADR-0012). Every external
+  # request enters here on :8080; the gateway validates the Keycloak OIDC token, mints/propagates the
+  # correlation id, rate-limits per subject, and reverse-proxies to the internal services below —
+  # which publish NO host ports of their own. The Stripe webhook is the sole unauthenticated route
+  # (Stripe signs its own payloads; payment verifies the signature).
+  #
+  # OIDC_ISSUER vs OIDC_JWKS_URL are deliberately different hosts: a token is minted where the caller
+  # reached Keycloak (host-published :8088, so iss=http://localhost:8088/realms/booking), but the
+  # gateway fetches signing keys over the internal network at keycloak:8080. Collapsing the two would
+  # reject every real token. The gateway fetches the JWKS synchronously at boot and exits if Keycloak
+  # is not yet serving keys; `restart: on-failure` retries until the realm import completes.
+  gateway:
+    restart: on-failure
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      HTTP_ADDR: ":8080"
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8088/realms/booking}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/booking/protocol/openid-connect/certs}
+      OIDC_CLOCK_SKEW: ${OIDC_CLOCK_SKEW:-30s}
+      CATALOG_BASE_URL: "http://catalog:8080"
+      AVAILABILITY_BASE_URL: "http://availability:8080"
+      BOOKING_BASE_URL: "http://booking:8080"
+      PAYMENT_BASE_URL: "http://payment:8080"
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-50}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-100}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8080:8080"
+    depends_on:
+      # service_healthy, not just _started: Keycloak's /health/ready passes only after the realm
+      # import completes, so the gateway's synchronous boot-time JWKS fetch finds live keys instead
+      # of an empty set. `restart: on-failure` above is the backstop if Keycloak blips later.
+      keycloak:
+        condition: service_healthy
+      catalog:
+        condition: service_started
+      availability:
+        condition: service_started
+      booking:
+        condition: service_started
+      payment:
+        condition: service_started
+
   catalog:
     build:
       context: .
@@ -51,8 +101,6 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/catalog?sslmode=disable"
       HTTP_ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "8081:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,8 +119,6 @@ services:
       BOOKING_HOLD_TTL_SECONDS: ${BOOKING_HOLD_TTL_SECONDS:-900}
       AVAILABILITY_SWEEP_INTERVAL_SECONDS: ${AVAILABILITY_SWEEP_INTERVAL_SECONDS:-30}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "8082:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,8 +140,6 @@ services:
       AVAILABILITY_BASE_URL: "http://availability:8080"
       CATALOG_BASE_URL: "http://catalog:8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "8083:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,8 +161,6 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_dev_secret}
       STRIPE_BASE_URL: "http://stripe-mock:12111"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "8084:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -141,8 +183,6 @@ services:
       SMTP_HOST: ${SMTP_HOST:-mailhog}
       SMTP_PORT: ${SMTP_PORT:-1025}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "8085:8080"
     depends_on:
       postgres:
         condition: service_healthy
