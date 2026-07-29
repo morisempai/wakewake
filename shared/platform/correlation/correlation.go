@@ -14,6 +14,8 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Header is the wire name, matching the X-Correlation-Id parameter in every OpenAPI spec.
@@ -74,6 +76,12 @@ func Middleware(next http.Handler) http.Handler {
 			id = NewID()
 		}
 		ctx := WithID(r.Context(), id)
+		// If a tracing middleware is outside this one, the server span is already on the context
+		// (ADR-0013 mandates that order). Tag it so Tempo can pivot from a trace to its logs by
+		// correlation id, the reverse of the log→trace derived field.
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.SetAttributes(attribute.String("correlation_id", FromContext(ctx)))
+		}
 		w.Header().Set(Header, FromContext(ctx))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
