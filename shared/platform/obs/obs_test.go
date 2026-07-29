@@ -43,6 +43,19 @@ func TestInitRecordsWithoutExporter(t *testing.T) {
 	span.End()
 }
 
+// Init must accept the OTel-standard URL endpoint form (scheme decides TLS), not only host:port.
+// Exporter construction is lazy, so this succeeds even with nothing listening.
+func TestInitAcceptsURLEndpoint(t *testing.T) {
+	shutdown, err := obs.Init(context.Background(), obs.Config{
+		Service:  "url-svc",
+		Endpoint: "http://localhost:4317",
+	})
+	if err != nil {
+		t.Fatalf("Init with URL endpoint: %v", err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+}
+
 // The load-bearing property: the canonical server chain (obs.Handler → correlation → log → mux)
 // produces log lines carrying a trace_id that matches the Grafana derived-field regex, plus the
 // correlation_id. Getting the middleware order wrong is exactly what this guards.

@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -40,13 +41,15 @@ type Config struct {
 	// on every span. Required.
 	Service string
 
-	// Endpoint is the OTLP/gRPC collector address as "host:port" (e.g. "otel-collector:4317").
+	// Endpoint is the OTLP/gRPC collector address. It accepts either the OTel-standard URL form
+	// ("http://otel-collector:4317", "https://collector:4317") or a bare "host:port". With a URL,
+	// the scheme decides TLS (http => insecure, https => secure) and Insecure is ignored.
 	// Empty means "record spans but export nothing": trace_id and span_id still reach the logs,
 	// they are simply not shipped. This is the dev-inner-loop default where the collector is down.
 	Endpoint string
 
-	// Insecure disables TLS on the exporter connection. The dev collector has no TLS; real
-	// environments set this false.
+	// Insecure disables TLS on the exporter connection when Endpoint is a bare host:port (a URL's
+	// scheme takes precedence). The dev collector has no TLS; real environments set this false.
 	Insecure bool
 
 	// SampleRatio in the open interval (0,1) samples that fraction of root traces. Any other
@@ -92,9 +95,15 @@ func Init(ctx context.Context, c Config) (func(context.Context) error, error) {
 	}
 
 	if c.Endpoint != "" {
-		grpcOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(c.Endpoint)}
-		if c.Insecure {
-			grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
+		var grpcOpts []otlptracegrpc.Option
+		if strings.Contains(c.Endpoint, "://") {
+			// OTel-standard URL form: the scheme decides TLS.
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithEndpointURL(c.Endpoint))
+		} else {
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithEndpoint(c.Endpoint))
+			if c.Insecure {
+				grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
+			}
 		}
 		exp, err := otlptracegrpc.New(ctx, grpcOpts...)
 		if err != nil {
