@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/morisempai/wakewake/shared/contracts/events"
+	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/testkit/eventtest"
 	"github.com/morisempai/wakewake/shared/testkit/pgtest"
 
@@ -104,7 +105,7 @@ func TestPaymentTableHoldsNoCardData_Issue18_AC2(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"amount_minor", "booking_id", "created_at", "currency", "failure_code",
+		"amount_minor", "booking_id", "correlation_id", "created_at", "currency", "failure_code",
 		"id", "provider", "provider_payment_id", "status", "updated_at",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -374,6 +375,89 @@ func TestRecordOutcomeForUnknownIntentFindsNothing_Issue18_AC4(t *testing.T) {
 	}
 	if n := countRows(t, pool, "outbox"); n != 0 {
 		t.Errorf("outbox holds %d rows, want 0 for an unknown intent", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #23 — the correlation id survives the Stripe webhook
+// ---------------------------------------------------------------------------
+
+// The load-bearing test for issue #23. A payment created under correlation id X, whose Stripe webhook
+// then arrives bearing a DIFFERENT correlation id (as correlation.Middleware would have minted for an
+// external callback carrying no X-Correlation-Id), must stage a PaymentSucceeded that carries the
+// ORIGINAL id X — not the webhook's fresh one. That is what keeps the customer journey a single trace
+// instead of two islands joined only by booking_id.
+func TestWebhookOutcomeCarriesTheOriginalCreatePaymentCorrelationId_Issue23(t *testing.T) {
+	t.Parallel()
+
+	store, pool := newStore(t)
+
+	const originalCorrelationID = "corr-from-create-payment-0123456789"
+
+	// A payment created carrying the createPayment request's correlation id (the service layer copies
+	// it off the context onto the aggregate; here we set it directly, as that is the store's input).
+	p := pendingPayment(t, newID(t))
+	p.CorrelationID = originalCorrelationID
+
+	stored, err := store.InsertPayment(context.Background(), claim(t), p)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if stored.CorrelationID != originalCorrelationID {
+		t.Fatalf("stored correlation_id = %q, want it persisted as %q", stored.CorrelationID, originalCorrelationID)
+	}
+
+	// The webhook is an external callback: its context carries a freshly minted id, unrelated to the
+	// original request. The fix must prefer the stored id over this one.
+	webhookCtx := correlation.WithID(context.Background(), "corr-webhook-minted-fresh-9876543210")
+
+	res, err := store.RecordOutcome(webhookCtx, "evt_"+newID(t), "payment_intent.succeeded", p.ProviderPaymentID, succeed())
+	if err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+	if !res.Found || !res.Changed {
+		t.Fatalf("result = %+v, want found+changed", res)
+	}
+
+	var gotCorrelationID string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT correlation_id FROM outbox WHERE event = $1`, events.PaymentSucceeded).
+		Scan(&gotCorrelationID); err != nil {
+		t.Fatalf("reading staged outbox correlation_id: %v", err)
+	}
+	if gotCorrelationID != originalCorrelationID {
+		t.Fatalf("PaymentSucceeded carried correlation_id %q, want the original %q from createPayment "+
+			"(the webhook's minted id must not win)", gotCorrelationID, originalCorrelationID)
+	}
+}
+
+// A legacy payment — one created before 0007, so its correlation_id is NULL — must not be regressed:
+// the webhook falls back to the outbox's mint-on-empty rather than stamping an empty id. The staged
+// event still carries a non-empty correlation id (just not a threaded one).
+func TestWebhookOutcomeForLegacyPaymentFallsBackToAMintedId_Issue23(t *testing.T) {
+	t.Parallel()
+
+	store, pool := newStore(t)
+
+	// No CorrelationID set: correlationArg sends NULL, mirroring a row inserted before the feature.
+	p := pendingPayment(t, newID(t))
+	if _, err := store.InsertPayment(context.Background(), claim(t), p); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := store.RecordOutcome(context.Background(), "evt_"+newID(t),
+		"payment_intent.succeeded", p.ProviderPaymentID, succeed()); err != nil {
+		t.Fatalf("RecordOutcome: %v", err)
+	}
+
+	var gotCorrelationID string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT correlation_id FROM outbox WHERE event = $1`, events.PaymentSucceeded).
+		Scan(&gotCorrelationID); err != nil {
+		t.Fatalf("reading staged outbox correlation_id: %v", err)
+	}
+	if gotCorrelationID == "" {
+		t.Fatal("staged PaymentSucceeded has an empty correlation_id; the legacy fallback must mint one")
 	}
 }
 

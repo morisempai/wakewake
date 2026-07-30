@@ -9,6 +9,7 @@ import (
 	"time"
 
 	spec "github.com/morisempai/wakewake/shared/contracts/openapi/payment"
+	"github.com/morisempai/wakewake/shared/platform/correlation"
 
 	"github.com/morisempai/wakewake/services/payment/internal/domain"
 	"github.com/morisempai/wakewake/services/payment/internal/stripe"
@@ -110,6 +111,15 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusInternalServerError, spec.ErrorErrorCodeInternalError,
 			"The webhook could not be processed. Safe to retry.")
 		return
+	}
+
+	// Re-hydrate the original correlation id captured at createPayment time (issue #23) so the
+	// processing log lines below join the same trace as the original request, rather than the id
+	// correlation.Middleware minted for this header-less external callback. The events themselves are
+	// already stamped inside RecordOutcome; this covers the handler's own logs. A legacy payment (no
+	// stored id) leaves the minted id in place.
+	if res.Found && res.Payment.CorrelationID != "" {
+		ctx = correlation.WithID(ctx, res.Payment.CorrelationID)
 	}
 
 	switch {

@@ -84,6 +84,9 @@ func (s *Server) CreatePayment(ctx context.Context, request spec.CreatePaymentRe
 			Key:         request.Params.IdempotencyKey,
 			Fingerprint: fingerprint,
 		},
+		// The gateway-forwarded correlation id, persisted on the payment so the Stripe webhook can
+		// re-hydrate it onto the outcome events instead of a freshly minted one (issue #23).
+		CorrelationID: correlation.FromContext(ctx),
 	})
 	if err != nil {
 		switch {

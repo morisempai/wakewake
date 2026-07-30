@@ -91,6 +91,13 @@ type Payment struct {
 	// enforces the biconditional).
 	FailureCode *string
 
+	// CorrelationID is the correlation id captured at createPayment time (the id the gateway
+	// forwarded). It is persisted so the Stripe webhook — an external callback that carries no
+	// correlation header — can re-hydrate the original id onto the outcome events it stages rather
+	// than the fresh one the webhook's own request minted (issue #23). Empty for rows created before
+	// the feature existed; the webhook falls back to mint-on-empty in that case.
+	CorrelationID string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
