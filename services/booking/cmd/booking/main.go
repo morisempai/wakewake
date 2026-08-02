@@ -25,6 +25,7 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/inbox"
 	"github.com/morisempai/wakewake/shared/platform/logging"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 	"github.com/morisempai/wakewake/shared/platform/outbox"
 	"github.com/morisempai/wakewake/shared/platform/pgxx"
 
@@ -67,6 +68,19 @@ func run() error {
 	// SIGINT/SIGTERM cancel this context, which every long-running component below selects on.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// OpenTelemetry bootstrap (ADR-0013). With no OTLP endpoint configured, spans are still recorded
+	// so trace_id reaches the logs; they are simply not exported. It never blocks on or fails because
+	// of an unreachable collector, so a missing backend cannot take this service down.
+	shutdownObs, err := obs.Init(ctx, obs.Config{
+		Service:  config.ServiceName,
+		Endpoint: cfg.OTLPEndpoint,
+		Insecure: true,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownObs(context.Background()) }()
 
 	pool, err := pgxx.NewPool(ctx, pgxx.PoolConfig{
 		URL:             cfg.Postgres.URL,

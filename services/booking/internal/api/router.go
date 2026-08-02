@@ -8,6 +8,9 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
+	"github.com/morisempai/wakewake/shared/platform/obs"
+
+	"github.com/morisempai/wakewake/services/booking/internal/config"
 )
 
 // NewRouter assembles the whole HTTP surface: probes, the generated spec router, the auth
@@ -57,7 +60,11 @@ func NewRouter(srv *Server, checker *health.Checker, log *slog.Logger) http.Hand
 	mux.Handle("/", generated)
 
 	// Auth reads the JWT `sub` into the context for the strict handlers; the probes ignore it.
-	// Correlation is outermost: every log line, staged event, and error envelope downstream reads
-	// the id from the context, so nothing may run before it is placed there.
-	return correlation.Middleware(httpx.LogMiddleware(log)(authMiddleware(mux)))
+	// Correlation is outermost of the app chain: every log line, staged event, and error envelope
+	// downstream reads the id from the context, so nothing may run before it is placed there.
+	//
+	// obs.Handler wraps the whole chain and must be truly outermost (ADR-0013): the server span has
+	// to start before correlation minting and logging run, or those inner layers emit log lines with
+	// no trace_id and the trace↔log jump silently breaks in Grafana.
+	return obs.Handler(correlation.Middleware(httpx.LogMiddleware(log)(authMiddleware(mux))), config.ServiceName)
 }
