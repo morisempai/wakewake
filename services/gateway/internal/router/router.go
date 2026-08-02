@@ -14,6 +14,7 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 
 	"github.com/morisempai/wakewake/services/gateway/internal/auth"
 	"github.com/morisempai/wakewake/services/gateway/internal/config"
@@ -94,7 +95,12 @@ func New(up Upstreams, verifier *auth.Verifier, limiter *ratelimit.Limiter, chec
 		httpx.WriteError(w, r, http.StatusNotFound, "not_found", "No route matches this request.")
 	}))
 
-	return correlation.Middleware(httpx.LogMiddleware(log)(mux))
+	// obs.Handler is the OUTERMOST wrapper: otelhttp must start the server span before anything
+	// else runs, so the span context is already on the request context when correlation and the log
+	// middleware read from it — that is what puts a trace_id on every log line (ADR-0013).
+	// Correlation stays just inside it: every log line and error envelope downstream reads the
+	// correlation id from the context, so nothing but the tracing span may run before it.
+	return obs.Handler(correlation.Middleware(httpx.LogMiddleware(log)(mux)), config.ServiceName)
 }
 
 // handlePrefix registers a handler for both the exact path and its subtree. Go's ServeMux treats
