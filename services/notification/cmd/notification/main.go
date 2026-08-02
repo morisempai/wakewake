@@ -26,6 +26,7 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
 	"github.com/morisempai/wakewake/shared/platform/logging"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 	"github.com/morisempai/wakewake/shared/platform/pgxx"
 
 	"github.com/morisempai/wakewake/services/notification/internal/config"
@@ -66,6 +67,18 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Install the TracerProvider and W3C propagator process-wide. Init never fails on an
+	// unreachable collector — spans are dropped, trace_id still reaches the logs (ADR-0013).
+	shutdownObs, err := obs.Init(ctx, obs.Config{
+		Service:  config.ServiceName,
+		Endpoint: cfg.OTLPEndpoint,
+		Insecure: true,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownObs(context.Background()) }()
+
 	pool, err := pgxx.NewPool(ctx, pgxx.PoolConfig{
 		URL:             cfg.Postgres.URL,
 		MaxConns:        cfg.Postgres.MaxConns,
@@ -98,10 +111,9 @@ func run() error {
 		return nil
 	})
 
-	// Probe-only HTTP surface. Correlation is outermost so every probe log line carries an id.
-	mux := http.NewServeMux()
-	checker.Mount(mux)
-	probeHandler := correlation.Middleware(httpx.LogMiddleware(log)(mux))
+	// Probe-only HTTP surface. obs.Handler is outermost so a server span is in context before
+	// correlation and logging run, and every probe log line carries a trace_id.
+	probeHandler := newProbeHandler(checker, log)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
@@ -166,6 +178,16 @@ func run() error {
 	log.InfoContext(context.Background(), "stopped")
 
 	return runErr
+}
+
+// newProbeHandler builds the probe-only HTTP surface (/healthz + /readyz). obs.Handler wraps it
+// outermost so otelhttp starts a server span before correlation and logging run — otherwise the
+// probe log lines carry no trace_id and trace↔log correlation silently breaks (ADR-0013). Kept as
+// a helper because this service has no internal/api router package to host the wiring or test it.
+func newProbeHandler(checker *health.Checker, log *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	checker.Mount(mux)
+	return obs.Handler(correlation.Middleware(httpx.LogMiddleware(log)(mux)), config.ServiceName)
 }
 
 // probe performs the container health check: a GET against this process's own /healthz. Liveness
