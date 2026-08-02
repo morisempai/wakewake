@@ -18,6 +18,7 @@ import (
 
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/logging"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 	"github.com/morisempai/wakewake/shared/platform/pgxx"
 
 	"github.com/morisempai/wakewake/services/catalog/internal/api"
@@ -61,6 +62,21 @@ func run() error {
 	// SIGINT/SIGTERM cancel this context, which the server shutdown below selects on.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing (ADR-0013). Installs the process-wide TracerProvider and W3C propagator so inbound
+	// traceparent headers are honored and spans export to the collector when one is configured.
+	// With OTEL_EXPORTER_OTLP_ENDPOINT unset the exporter ships nothing — trace_id/span_id still
+	// reach the logs — so a missing collector never keeps the service from starting. Insecure is
+	// the safe default for a bare host:port dev collector; a URL endpoint's scheme overrides it.
+	shutdownObs, err := obs.Init(ctx, obs.Config{
+		Service:  config.ServiceName,
+		Endpoint: cfg.OTLPEndpoint,
+		Insecure: true,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownObs(context.Background()) }()
 
 	pool, err := pgxx.NewPool(ctx, pgxx.PoolConfig{
 		URL:             cfg.Postgres.URL,

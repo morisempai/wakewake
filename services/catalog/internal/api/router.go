@@ -4,10 +4,12 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/morisempai/wakewake/services/catalog/internal/config"
 	spec "github.com/morisempai/wakewake/shared/contracts/openapi/catalog"
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 )
 
 // NewRouter assembles the whole HTTP surface: probes, the generated spec router, and the
@@ -52,7 +54,10 @@ func NewRouter(srv *Server, checker *health.Checker, log *slog.Logger) http.Hand
 	checker.Mount(mux)
 	mux.Handle("/", generated)
 
-	// Correlation is outermost: every log line and every error envelope downstream reads the id
-	// from the context, so nothing may run before it is placed there.
-	return correlation.Middleware(httpx.LogMiddleware(log)(mux))
+	// obs.Handler is the OUTERMOST wrapper: otelhttp must start the server span before anything
+	// else runs, so the span context is already on the request context when correlation and the
+	// log middleware read from it — that is what puts a trace_id on every log line (ADR-0013).
+	// Correlation stays just inside it: every log line and every error envelope downstream reads
+	// the correlation id from the context, so nothing but the tracing span may run before it.
+	return obs.Handler(correlation.Middleware(httpx.LogMiddleware(log)(mux)), config.ServiceName)
 }
