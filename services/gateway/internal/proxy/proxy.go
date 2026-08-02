@@ -17,6 +17,7 @@ import (
 
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 )
 
 // codeBadGateway is the error code the gateway returns when an upstream cannot be reached.
@@ -44,9 +45,11 @@ func New(target string, log *slog.Logger) (*httputil.ReverseProxy, error) {
 			// own rate limiting uses the real connection address, not these headers.
 			pr.SetXForwarded()
 		},
-		// The correlation RoundTripper stamps the id onto the outbound request when the client did
-		// not send one, so a request minted at the edge stays traceable through the upstream.
-		Transport: correlation.RoundTripper{Base: newTransport()},
+		// obs.RoundTripper layers otelhttp over the correlation RoundTripper: it injects the W3C
+		// traceparent (so the edge server span's child continues into the upstream, keeping the trace
+		// whole) AND stamps the correlation id onto the outbound request, so a request minted at the
+		// edge stays traceable through the upstream by both id and trace (ADR-0013).
+		Transport: obs.RoundTripper(newTransport()),
 		ModifyResponse: func(res *http.Response) error {
 			// The edge already echoed the correlation id on the response (correlation.Middleware);
 			// drop any copy the upstream also set so the client sees exactly one value.
