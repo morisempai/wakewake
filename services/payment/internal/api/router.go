@@ -4,10 +4,12 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/morisempai/wakewake/services/payment/internal/config"
 	spec "github.com/morisempai/wakewake/shared/contracts/openapi/payment"
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 )
 
 // NewRouter assembles the whole HTTP surface: probes, the raw Stripe webhook, the generated spec
@@ -66,7 +68,13 @@ func NewRouter(srv *Server, webhook *WebhookHandler, checker *health.Checker, lo
 	mux.Handle("/", generated)
 
 	// Auth reads the JWT `sub` into the context for the strict handlers; the probes and the webhook
-	// ignore it (the webhook authenticates by Stripe signature). Correlation is outermost: every
-	// log line, staged event, and error envelope downstream reads the id from the context.
-	return correlation.Middleware(httpx.LogMiddleware(log)(authMiddleware(mux)))
+	// ignore it (the webhook authenticates by Stripe signature).
+	//
+	// obs.Handler is the OUTERMOST wrapper: otelhttp must start the server span before anything
+	// else runs, so the span context is already on the request context when correlation and the
+	// log middleware read from it — that is what puts a trace_id on every log line, including the
+	// inbound Stripe webhook's (ADR-0013). Correlation stays just inside it: every log line,
+	// staged event, and error envelope downstream reads the correlation id from the context, so
+	// nothing but the tracing span may run before it.
+	return obs.Handler(correlation.Middleware(httpx.LogMiddleware(log)(authMiddleware(mux))), config.ServiceName)
 }
