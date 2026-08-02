@@ -8,6 +8,9 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/httpx"
+	"github.com/morisempai/wakewake/shared/platform/obs"
+
+	"github.com/morisempai/wakewake/services/availability/internal/config"
 )
 
 // NewRouter assembles the whole HTTP surface: probes, the generated spec router, and the
@@ -61,9 +64,12 @@ func NewRouter(srv *Server, checker *health.Checker, log *slog.Logger) http.Hand
 	checker.Mount(mux)
 	mux.Handle("/", generated)
 
-	// Correlation is outermost: every log line, every staged event, and every error envelope
-	// downstream reads the id from the context, so nothing may run before it is placed there.
-	return correlationFirst(httpx.LogMiddleware(log)(mux))
+	// obs.Handler is the OUTERMOST layer: the OTel server span has to start before correlation
+	// minting and logging run, or the log lines those inner layers emit will not carry a
+	// trace_id — which looks fine in tests and silently breaks trace↔log correlation in Grafana
+	// (ADR-0013). Correlation stays outermost of the remaining chain: every log line, staged
+	// event, and error envelope downstream reads the id from the context.
+	return obs.Handler(correlationFirst(httpx.LogMiddleware(log)(mux)), config.ServiceName)
 }
 
 // correlationFirst is a named alias for the shared middleware, kept separate so the ordering

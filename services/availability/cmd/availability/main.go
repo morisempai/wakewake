@@ -25,6 +25,7 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/consumer"
 	"github.com/morisempai/wakewake/shared/platform/health"
 	"github.com/morisempai/wakewake/shared/platform/logging"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 	"github.com/morisempai/wakewake/shared/platform/outbox"
 	"github.com/morisempai/wakewake/shared/platform/pgxx"
 
@@ -72,6 +73,20 @@ func run() error {
 	// SIGINT/SIGTERM cancel this context, which every long-running component below selects on.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing is installed before anything binds a port or dials a dependency, so the very first
+	// request's server span exists and every log line downstream carries a trace_id. An empty
+	// endpoint records spans but exports nothing (the dev inner loop); a configured collector
+	// ships them. It never blocks on or fails because of an unreachable collector.
+	shutdownObs, err := obs.Init(ctx, obs.Config{
+		Service:  config.ServiceName,
+		Endpoint: cfg.OTLPEndpoint,
+		Insecure: true,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = shutdownObs(context.Background()) }()
 
 	pool, err := pgxx.NewPool(ctx, pgxx.PoolConfig{
 		URL:             cfg.Postgres.URL,
