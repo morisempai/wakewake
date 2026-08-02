@@ -28,6 +28,12 @@ import (
 	"github.com/morisempai/wakewake/shared/platform/correlation"
 )
 
+// The infra-wait windows below (waitForQueue 30s, waitFor 90s) are deliberately generous. They are
+// poll-based and return the instant the condition holds, so a healthy run is not slowed — the
+// headroom only absorbs RabbitMQ container contention when several integration packages start their
+// own broker at once under CI load, which was flaking these tests (issue #45). The windows bound
+// failure latency, not success latency; the assertions are unchanged.
+//
 // fastRetries keeps the suite quick. The production values (200ms, 1s, 5s) are ADR-0010's; the
 // behaviour under test is the retry-then-dead-letter sequence, not the specific durations.
 var fastRetries = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond, 60 * time.Millisecond}
@@ -63,7 +69,7 @@ func TestConsumerHandlesAPublishedEvent(t *testing.T) {
 
 	// Give the consumer time to declare and bind before publishing, or the message is routed
 	// before a queue exists and is silently dropped by the exchange.
-	waitForQueue(t, conn, broker.QueueName(service, events.ReservationCreated), 10*time.Second)
+	waitForQueue(t, conn, broker.QueueName(service, events.ReservationCreated), 30*time.Second)
 
 	payload := samplePayload()
 	publishDirect(t, conn, events.ReservationCreated, payload, "corr-consume")
@@ -77,7 +83,7 @@ func TestConsumerHandlesAPublishedEvent(t *testing.T) {
 			t.Errorf("correlation_id = %q — it must propagate from the envelope into the handler",
 				got.CorrelationID)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(90 * time.Second):
 		t.Fatal("consumer never handled the published event")
 	}
 }
@@ -112,11 +118,11 @@ func TestFailingHandlerDeadLettersAndStopsRetrying(t *testing.T) {
 		}, alwaysFails)
 	}()
 
-	waitForQueue(t, conn, queue, 10*time.Second)
+	waitForQueue(t, conn, queue, 30*time.Second)
 	publishDirect(t, conn, events.ReservationCreated, samplePayload(), "corr-dlq")
 
 	// The message should arrive in the DLQ once retries are exhausted.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, 90*time.Second, func() bool {
 		return amqpDepth(t, conn, dlq) == 1
 	}, "message never reached the dead-letter queue")
 
@@ -168,10 +174,10 @@ func TestMalformedMessageSkipsRetriesEntirely(t *testing.T) {
 		}, handler)
 	}()
 
-	waitForQueue(t, conn, queue, 10*time.Second)
+	waitForQueue(t, conn, queue, 30*time.Second)
 	publishRaw(t, conn, events.ReservationCreated, []byte(`{"not":"an envelope"}`))
 
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, 90*time.Second, func() bool {
 		return amqpDepth(t, conn, dlq) == 1
 	}, "malformed message never reached the dead-letter queue")
 
