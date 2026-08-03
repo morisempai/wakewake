@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/morisempai/wakewake/shared/platform/correlation"
+	"github.com/morisempai/wakewake/shared/platform/obs"
 )
 
 // ErrorDetail is one field-level problem, matching the specs' details[] items.
@@ -99,15 +100,19 @@ func NewClient(c ClientConfig) *http.Client {
 		c.Backoff = 100 * time.Millisecond
 	}
 
+	// obs.RoundTripper wraps the base in otelhttp (starts a client span, injects traceparent) THEN
+	// the correlation RoundTripper (injects X-Correlation-Id), so every internal hop continues both
+	// the machine trace and the human-facing correlation id. A bare correlation.RoundTripper here
+	// would keep the correlation id threaded but break the trace at the first service-to-service
+	// call — the silent gap ADR-0013 exists to close. Retries live inside the span, so all attempts
+	// of one logical call share it.
 	return &http.Client{
 		Timeout: c.Timeout,
-		Transport: correlation.RoundTripper{
-			Base: &retryTransport{
-				base:       http.DefaultTransport,
-				maxRetries: c.MaxRetries,
-				backoff:    c.Backoff,
-			},
-		},
+		Transport: obs.RoundTripper(&retryTransport{
+			base:       http.DefaultTransport,
+			maxRetries: c.MaxRetries,
+			backoff:    c.Backoff,
+		}),
 	}
 }
 
