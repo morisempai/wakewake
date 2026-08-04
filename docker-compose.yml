@@ -76,6 +76,11 @@ services:
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-50}
       RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-100}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing (ADR-0013). EMPTY by default: spans are still recorded so trace_id/span_id reach the
+      # logs (the log->trace contract), but nothing is exported — the inner loop needs no collector
+      # running. Set OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 (see .env.example) to ship
+      # traces to Tempo via the observability stack.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "8080:8080"
     depends_on:
@@ -101,6 +106,8 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_dev_pw}@postgres:5432/catalog?sslmode=disable"
       HTTP_ADDR: ":8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing — empty by default (record-only); see gateway above and .env.example.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,6 +126,8 @@ services:
       BOOKING_HOLD_TTL_SECONDS: ${BOOKING_HOLD_TTL_SECONDS:-900}
       AVAILABILITY_SWEEP_INTERVAL_SECONDS: ${AVAILABILITY_SWEEP_INTERVAL_SECONDS:-30}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing — empty by default (record-only); see gateway above and .env.example.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,6 +149,8 @@ services:
       AVAILABILITY_BASE_URL: "http://availability:8080"
       CATALOG_BASE_URL: "http://catalog:8080"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing — empty by default (record-only); see gateway above and .env.example.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -161,6 +172,9 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_dev_secret}
       STRIPE_BASE_URL: "http://stripe-mock:12111"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing — empty by default (record-only); see gateway above and .env.example. The Stripe
+      # client transport stays unwrapped (external PCI boundary); this covers payment's own spans.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -183,6 +197,8 @@ services:
       SMTP_HOST: ${SMTP_HOST:-mailhog}
       SMTP_PORT: ${SMTP_PORT:-1025}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing — empty by default (record-only); see gateway above and .env.example.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy

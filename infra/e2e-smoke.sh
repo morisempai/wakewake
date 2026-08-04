@@ -116,6 +116,111 @@ for m in items[:2]:
     h=m.get("Content",{}).get("Headers",{})
     print("  To:", h.get("To"), "| Subject:", h.get("Subject"))
 '
+say "10. TRACE — log<->trace linkage (ADR-0013) and one trace_id across the synchronous HTTP hops"
+# Two distinct claims, proven from the services' own structured logs (no Tempo query needed — the
+# assertions hold whether or not OTEL_EXPORTER_OTLP_ENDPOINT is set, because spans are recorded and
+# their ids reach the logs regardless):
+#
+#   a) LINKAGE — every HTTP hop emits a log line matching Grafana's Loki derived-field regex,
+#      "trace_id":"(\w+)". A service spelling it `traceId`, or emitting an empty id, silently breaks
+#      trace<->log correlation with a green build; this fails it instead.
+#   b) CONTINUITY — the HOLD is booking receiving POST /v1/bookings and, in the same request,
+#      calling availability's POST /v1/reservations. With outbound propagation (PR #38) both hops
+#      share ONE trace_id. A broken hop shows up as two different ids — the exact gap ADR-0013 closes.
+#
+# The async boundary is asserted the other way: payment/notification are reached over RabbitMQ, so
+# they carry the same correlation_id but start their OWN trace (async traceparent is deferred —
+# ADR-0013). We assert the correlation_id stitches the bus, and treat a differing trace_id as
+# expected, not a failure.
+dclogs() { sg docker -c "docker compose logs --no-log-prefix --no-color $1 2>/dev/null"; }
+# Collect every service's logs into one file, each line tagged with its service. A file (not a pipe)
+# because the python program itself arrives on stdin via the heredoc below.
+TRACE_LOGS="$(mktemp)"
+trap 'rm -f "$TRACE_LOGS"' EXIT
+for s in gateway booking availability catalog payment notification; do
+  dclogs "$s" | sed "s/^/$s /"
+done > "$TRACE_LOGS"
+
+CID="$CID" LOGS="$TRACE_LOGS" python3 - <<'PY'
+import json, os, re, sys
+
+cid = os.environ["CID"]
+loki = re.compile(r'"trace_id":"(\w+)"')            # the exact Grafana Loki derived-field regex
+
+http_services = ["gateway", "booking", "availability", "catalog"]
+async_services = ["payment", "notification"]
+
+# Per service: any correlation-matched line that also satisfies the Loki regex.
+linked = {s: False for s in http_services}
+seen_cid = {s: False for s in http_services + async_services}
+hold_trace = None          # booking's trace_id on POST /v1/bookings
+resv_trace = None          # availability's trace_id on POST /v1/reservations
+
+with open(os.environ["LOGS"], encoding="utf-8", errors="replace") as fh:
+    log_lines = fh.readlines()
+
+for raw in log_lines:
+    svc, _, line = raw.partition(" ")
+    line = line.strip()
+    if not line or not line.startswith("{"):
+        continue
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        continue
+    if rec.get("correlation_id") != cid:
+        continue
+    if svc in seen_cid:
+        seen_cid[svc] = True
+    m = loki.search(line)                            # linkage proven against the RAW line, regex-exact
+    tid = m.group(1) if m else ""
+    if svc in linked and tid:
+        linked[svc] = True
+    route = str(rec.get("route", ""))
+    method = str(rec.get("method", ""))
+    if svc == "booking" and method == "POST" and "/bookings" in route and tid:
+        hold_trace = tid
+    if svc == "availability" and method == "POST" and "/reservations" in route and tid:
+        resv_trace = tid
+
+fail = []
+
+# (a) linkage on every synchronous HTTP hop
+for s in http_services:
+    state = "ok" if linked[s] else "MISSING"
+    print(f"  linkage  {s:<13} trace_id in logs: {state}")
+    if not linked[s]:
+        fail.append(f"{s}: no log line matching \"trace_id\":\"(\\w+)\" for correlation_id={cid}")
+
+# (b) one trace across the booking->availability hold hop
+print(f"  hold trace_id (booking POST /v1/bookings):        {hold_trace or 'MISSING'}")
+print(f"  resv trace_id (availability POST /v1/reservations): {resv_trace or 'MISSING'}")
+if not hold_trace:
+    fail.append("no trace_id on booking's POST /v1/bookings — the hold hop was not traced")
+elif not resv_trace:
+    fail.append("no trace_id on availability's POST /v1/reservations — the downstream hop was not traced")
+elif hold_trace != resv_trace:
+    fail.append(f"trace broke across the hold hop: booking={hold_trace} availability={resv_trace} "
+                "(outbound traceparent not propagated — PR #38 regression)")
+else:
+    print(f"  CONTINUITY OK — one trace ({hold_trace}) spans gateway->booking->availability")
+
+# async boundary: correlation stitches the bus; a differing trace is expected, not a failure
+for s in async_services:
+    note = "correlation_id present" if seen_cid[s] else "NOT REACHED"
+    print(f"  async    {s:<13} {note} (own trace by design — ADR-0013)")
+    if not seen_cid[s]:
+        fail.append(f"{s}: never logged correlation_id={cid} — the async hop lost the correlation id")
+
+if fail:
+    print("\nTRACE VERIFICATION FAILED:")
+    for f in fail:
+        print("  -", f)
+    sys.exit(1)
+print("\ntrace verification passed: log<->trace linkage holds and one trace_id spans the HTTP hops")
+PY
+[ $? -eq 0 ] || { echo "TRACE step failed — see above"; exit 1; }
+
 say "RESULT — booking / payment / reservation state"
 echo "booking:      $(psql booking "SELECT status FROM booking WHERE id='$BOOKING_ID';")"
 echo "payment:      $(psql payment "SELECT status FROM payment WHERE booking_id='$BOOKING_ID';")"
